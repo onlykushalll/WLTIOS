@@ -35,7 +35,10 @@ test:
 	@echo "--- Dependency Resolver ---"
 	@$(CC) $(CFLAGS) $(INIT_INC) -o $(OUT)-dep tests/userspace/dependency_test.c src/userspace/wlt-init/dependency.c src/userspace/wlt-init/service.c src/userspace/wlt-init/log.c src/userspace/wlt-init/tor.c && $(OUT)-dep || echo "FAIL"
 	@echo ""
+	@echo "--- Process Monitor ---"
+	@$(CC) $(CFLAGS) $(INIT_INC) -o $(OUT)-mon tests/userspace/monitor_test.c src/userspace/wlt-init/monitor.c src/userspace/wlt-init/service.c src/userspace/wlt-init/dependency.c src/userspace/wlt-init/log.c src/userspace/wlt-init/tor.c && $(OUT)-mon || echo "FAIL"
+	@echo ""
 	@echo "=== All Tests Complete ==="
 
 clean:
-	rm -f $(OUT)-sha $(OUT)-cfg $(OUT)-svc $(OUT)-dep
+	rm -f $(OUT)-sha $(OUT)-cfg $(OUT)-svc $(OUT)-dep $(OUT)-mon
