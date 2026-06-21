@@ -19,148 +19,121 @@
 WLTIOS/
 │
 ├── boot/                                          # Boot system
-│   └── wlt-boot/ (C) — UEFI bootloader
-│       ├── boot.c          # Main entry (efi_main)
-│       ├── memory.c        # UEFI memory map parsing
-│       ├── loader.c        # seL4 ELF loader
-│       ├── verify.c        # Signature verification (SHA-256)
-│       ├── config.c        # Boot config parsing
-│       └── console.c       # UEFI console output
+│   └── 📋 wlt-boot/ (C) — UEFI bootloader
+│       ├── ✅ boot.c          # Main entry (efi_main) — SKELETON
+│       ├── ✅ console.c       # UEFI console output — SKELETON
+│       ├── ✅ memory.c        # UEFI memory map parsing — SKELETON
+│       ├── ✅ loader.c        # seL4 ELF loader — SKELETON
+│       ├── ✅ verify.c        # Signature verification (SHA-256) — SKELETON
+│       ├── ✅ config.c        # Boot config parsing — SKELETON
+│       └── ✅ Makefile        # Cross-compiler build rules
 │
 ├── sel4-partitions/                              # seL4 isolated services
-│   ├── firewall-pd/ (C) — Packet filtering + kill switch
-│   │   └── (Planned — see RESEARCH_SEL4_PARTITIONS.md)
-│   ├── key-vault-pd/ (C) — Encryption key storage
-│   │   └── (Planned)
-│   ├── boot-verifier-pd/ (C) — Runtime integrity check
-│   │   └── (Planned)
-│   └── (Tor runs in second Linux VM — see ADR-03)
+│   ├── 📋 firewall-pd/ (C) — Packet filtering + kill switch
+│   ├── 📋 key-vault-pd/ (C) — Encryption key storage
+│   └── 📋 boot-verifier-pd/ (C) — Runtime integrity check
 │
 ├── kernel/                                        # Linux kernel (reused)
-│   └── (Linux LTS 6.x — minimal config, not written by us)
+│   └── 💡 (Linux LTS 6.x — minimal config, not written by us)
 │
 ├── userspace/                                     # Custom userspace
 │   │
-│   ├── wlt-init/ (C) — Custom init system (PID 1)
-│   │   ├── init.c          # Main entry
-│   │   ├── service.c       # Service loading + parsing
-│   │   ├── monitor.c       # Process monitoring
-│   │   ├── dependency.c    # Dependency graph
-│   │   ├── tor.c           # Tor status tracking
-│   │   ├── mount.c         # Filesystem mounting
-│   │   ├── shutdown.c      # Shutdown sequence
-│   │   ├── log.c           # Logging
-│   │   └── ctl.c           # wltctl command handler
+│   ├── 📋 wlt-init/ (C) — Custom init system (PID 1)
+│   │   ├── ✅ init.c          # Main entry — SKELETON (boot sequence)
+│   │   ├── ✅ service.c       # Service loading + parsing — SKELETON
+│   │   ├── ✅ monitor.c       # Process monitoring — SKELETON
+│   │   ├── ✅ dependency.c    # Dependency graph — SKELETON
+│   │   ├── ✅ tor.c           # Tor status + kill switch — SKELETON
+│   │   ├── ✅ mount.c         # Filesystem mounting — SKELETON
+│   │   ├── ✅ log.c           # Logging — IMPLEMENTED
+│   │   └── ✅ Makefile
 │   │
-│   ├── wlt-compositor/ (C + wlroots) — Wayland compositor
-│   │   └── (Planned — see ADR-05, RESEARCH_TAILS_WLROOTS.md)
-│   │
-│   ├── wlt-render/ (C + OpenGL/Vulkan) — Rendering engine
-│   │   └── (Planned — shadows, blur, animations)
-│   │
-│   ├── wlt-widgets/ (C) — Custom widget toolkit
-│   │   └── (Planned — buttons, menus, dialogs)
-│   │
-│   ├── wlt-shell/ (C + wlt-widgets) — Desktop shell
-│   │   └── (Planned — taskbar, launcher, notifications)
-│   │
-│   ├── wlt-pkg/ (Rust) — Package manager
-│   │   └── (Planned — Nix-style, atomic, rollback)
-│   │
-│   ├── wlt-net/ (Rust) — Network manager
-│   │   └── (Planned — WiFi, Ethernet, VPN config)
-│   │
-│   ├── wlt-sandbox/ (Rust) — App sandboxing
-│   │   └── (Planned — cgroups + namespaces wrapper)
-│   │
-│   ├── wlt-crypto/ (C + libsodium) — Disk + file encryption
-│   │   └── (Planned — LUKS integration)
-│   │
-│   ├── wlt-tor-mgr/ (Rust) — Tor control panel
-│   │   └── (Planned — circuit switching, identity)
-│   │
-│   ├── wlt-permissions/ (Rust) — App permission system
-│   │   └── (Planned — network, files, camera)
-│   │
-│   ├── wlt-ai/ (Rust + Python) — AI assistant
-│   │   ├── core/           # LLM integration, tool use
-│   │   ├── ui/             # Sidebar, voice, commands
-│   │   ├── vision/         # Screen understanding (VLM)
-│   │   └── audio/          # Voice I/O (STT, TTS)
-│   │   └── (Planned)
-│   │
-│   ├── wlt-settings/ (C + wlt-widgets) — Settings app
-│   │   └── (Planned)
-│   │
-│   ├── wlt-filemanager/ (C + wlt-widgets) — File manager
-│   │   └── (Planned — with Tor download + encryption)
-│   │
-│   ├── wlt-terminal/ (C + wlt-widgets) — Terminal emulator
-│   │   └── (Planned)
-│   │
-│   └── wlt-update/ (Rust) — Atomic update system
-│       └── (Planned — A/B partition swap)
+│   ├── 📋 wlt-compositor/ (C + wlroots) — Wayland compositor
+│   ├── 💡 wlt-render/ (C + OpenGL/Vulkan) — Rendering engine
+│   ├── 💡 wlt-widgets/ (C) — Custom widget toolkit
+│   ├── 📋 wlt-shell/ (C) — Desktop shell (taskbar, launcher)
+│   ├── 📋 wlt-pkg/ (Rust) — Package manager (Nix-style)
+│   ├── 📋 wlt-net/ (Rust) — Network manager (Tor-only)
+│   ├── 📋 wlt-sandbox/ (Rust) — App sandboxing
+│   ├── 📋 wlt-crypto/ (C + libsodium) — Disk + file encryption
+│   ├── 📋 wlt-tor-mgr/ (Rust) — Tor control panel
+│   ├── 📋 wlt-permissions/ (Rust) — App permission system
+│   ├── 📋 wlt-ai/ (Rust + Python) — AI assistant
+│   ├── 📋 wlt-settings/ (C) — Settings app
+│   ├── 📋 wlt-filemanager/ (C) — File manager
+│   ├── 📋 wlt-terminal/ (C) — Terminal emulator
+│   └── 📋 wlt-update/ (Rust) — Atomic A/B update system
 │
 ├── tools/                                        # Build tools
-│   ├── build.sh            # Build the OS
-│   ├── test.sh             # Run all tests
-│   ├── qemu-test.sh        # Boot test in QEMU
-│   └── pre-commit-check.sh # Security + lint checks
+│   └── 💡 (build.sh, test.sh, etc. — in scripts/)
 │
 ├── scripts/                                      # Automation
-│   └── auto-commit.sh     # Auto-commit + push to GitHub
+│   ├── ✅ auto-commit.sh     # Auto-commit + push to GitHub
+│   ├── ✅ build.sh           # Full build (seL4 + WLT-Boot + WLT-Init)
+│   ├── ✅ test.sh            # Run all tests
+│   ├── ✅ qemu-test.sh       # Boot test in QEMU
+│   └── ✅ pre-commit-check.sh # Security + lint checks
 │
 ├── tests/                                        # All tests
-│   ├── boot/               # Bootloader tests
-│   ├── sel4/               # seL4 partition tests
-│   ├── kernel/             # Kernel module tests
-│   ├── userspace/          # Userspace tests
-│   ├── security/           # Security + penetration tests
-│   └── performance/        # Performance benchmarks
+│   ├── 💡 boot/               # Bootloader tests
+│   ├── 💡 sel4/               # seL4 partition tests
+│   ├── 💡 kernel/             # Kernel module tests
+│   ├── 💡 userspace/          # Userspace tests
+│   ├── 💡 security/           # Security + penetration tests
+│   └── 💡 performance/        # Performance benchmarks
 │
 └── docs/                                         # Documentation
-    ├── ARCHITECTURE.md
-    ├── PRD.md
-    ├── ROADMAP.md
-    ├── ENGINEERING_FRAMEWORK.md
-    ├── AGENT_ORCHESTRATION.md
-    ├── ONBOARDING.md
-    ├── CODING_STYLE.md
-    ├── MODULE_MAP.md (this file)
-    ├── specs/              # Module specs (before code)
-    ├── adr/                # Architecture Decision Records
-    └── context/            # Research + recovery files
+    ├── ✅ ARCHITECTURE.md
+    ├── ✅ PRD.md
+    ├── ✅ ROADMAP.md
+    ├── ✅ ENGINEERING_FRAMEWORK.md
+    ├── ✅ AGENT_ORCHESTRATION.md
+    ├── ✅ ONBOARDING.md
+    ├── ✅ CODING_STYLE.md
+    ├── ✅ MODULE_MAP.md (this file)
+    ├── ✅ CONTRIBUTING.md
+    ├── ✅ specs/              # 18 module specs
+    ├── ✅ adr/                # 7 Architecture Decision Records
+    └── ✅ context/            # Research + recovery files
 ```
 
 ---
 
 ## Status Summary
 
-| Layer | Modules Planned | Implemented | % Complete |
-|-------|-----------------|-------------|------------|
-| Boot | 1 (wlt-boot) | 0 | 0% |
-| seL4 Partitions | 3 (firewall, key-vault, boot-verifier) | 0 | 0% |
-| Kernel | 1 (Linux, reused) | 0 (not configured) | 0% |
-| Userspace | 14 modules | 0 | 0% |
-| Tools/Scripts | 5 | 1 (auto-commit.sh) | 20% |
-| Docs | 10+ | 10+ | 100% (Phase 1 docs) |
-| **Total** | **~24 modules** | **1** | **~4%** |
+| Layer | Modules Planned | Spec'd | Skeleton | Implemented | % Complete |
+|-------|-----------------|--------|----------|-------------|------------|
+| Boot | 1 (wlt-boot) | 1 ✅ | 1 ✅ | 0 | 30% (spec + skeleton) |
+| seL4 Partitions | 3 | 3 ✅ | 0 | 0 | 15% (spec only) |
+| Kernel | 1 (reused) | 0 | 0 | 0 | 0% (not started) |
+| Userspace | 14 | 14 ✅ | 1 ✅ | 0 | 15% (specs + 1 skeleton) |
+| Tools/Scripts | 5 | — | 5 ✅ | 5 ✅ | 100% |
+| Tests | 5 dirs | — | 0 | 0 | 0% (dirs created) |
+| Docs | 10+ | — | — | 10+ ✅ | 100% (Phase 1 docs) |
+| **Total** | **~24 modules** | **18** | **2** | **1 (log.c)** | **~20%** |
 
-## Dependencies Graph (Simplified)
+## Spec Status (18/18 complete)
 
-```
-wlt-boot → seL4 → Linux guest
-                   ↓
-               wlt-init → wlt-crypto → key-vault-pd (seL4)
-                   ↓
-               wlt-tor-mgr → tor-vm (second Linux) → firewall-pd (seL4)
-                   ↓
-               wlt-net → wlt-compositor → wlt-shell → wlt-ai
-                                              ↓
-                                         wlt-widgets → wlt-settings
-                                                      → wlt-filemanager
-                                                      → wlt-terminal
-```
+| Module | Spec File | Status |
+|--------|-----------|--------|
+| WLT-Boot | specs/wlt-boot.md | ✅ |
+| WLT-Init | specs/wlt-init.md | ✅ |
+| WLT-Compositor | specs/wlt-compositor.md | ✅ |
+| WLT-Shell | specs/wlt-shell.md | ✅ |
+| WLT-Pkg | specs/wlt-pkg.md | ✅ |
+| WLT-Net | specs/wlt-net.md | ✅ |
+| WLT-Sandbox | specs/wlt-sandbox.md | ✅ |
+| WLT-Crypto | specs/wlt-crypto.md | ✅ |
+| WLT-Tor-Mgr | specs/wlt-tor-mgr.md | ✅ |
+| WLT-Permissions | specs/wlt-permissions.md | ✅ |
+| WLT-AI | specs/wlt-ai.md | ✅ |
+| WLT-Settings | specs/wlt-settings.md | ✅ |
+| WLT-FileManager | specs/wlt-filemanager.md | ✅ |
+| WLT-Terminal | specs/wlt-terminal.md | ✅ |
+| WLT-Update | specs/wlt-update.md | ✅ |
+| Firewall PD | specs/firewall-pd.md | ✅ |
+| Key Vault PD | specs/key-vault-pd.md | ✅ |
+| Boot Verifier PD | specs/boot-verifier-pd.md | ✅ |
 
 ## Critical Path (Phase 1)
 

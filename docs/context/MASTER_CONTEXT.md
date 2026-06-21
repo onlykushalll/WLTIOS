@@ -162,36 +162,57 @@ This is a comprehensive read-only audit framework for web projects. It covers:
 
 ---
 
-## 7. CURRENT STATE (as of 2026-06-21)
+## 7. CURRENT STATE (as of 2026-06-21, 3:30 PM IST)
 
 ### What's Done
-- ✅ WLTIOS folder created at `OneDrive\Desktop\WLTIOS\`
-- ✅ Architecture Document (619 lines)
-- ✅ PRD (501 lines)
-- ✅ Roadmap (505 lines)
-- ✅ Engineering Framework (450 lines)
-- ✅ Agent Orchestration (400 lines)
-- ✅ Onboarding (200 lines)
-- ✅ auto-commit.sh script
-- ✅ Git initialized, 2 commits pushed to GitHub
-- ✅ QEMU 11.0.50 installed on PC (`C:\Program Files\qemu\`, added to PATH)
+- ✅ WLTIOS folder at `OneDrive\Desktop\WLTIOS\`
+- ✅ All documentation complete:
+  - ARCHITECTURE.md (619 lines)
+  - PRD.md (501 lines)
+  - ROADMAP.md (505 lines)
+  - ENGINEERING_FRAMEWORK.md (the constitution, 10 rules)
+  - AGENT_ORCHESTRATION.md (7 agent roles)
+  - ONBOARDING.md (1-hour guide)
+  - CODING_STYLE.md (enforced rules)
+  - MODULE_MAP.md (codebase map)
+  - CONTRIBUTING.md
+  - LICENSE (GPL v3)
+- ✅ 7 ADRs (Architecture Decision Records):
+  - ADR-01: UEFI vs BIOS → UEFI
+  - ADR-02: seL4 as base with Linux guest
+  - ADR-03: Tor in second Linux VM (not native seL4 partition)
+  - ADR-04: Microkit + libvmm (not CAmkES)
+  - ADR-05: Wayland + wlroots (not X11)
+  - ADR-06: musl libc (not glibc)
+  - ADR-07: Custom init (not systemd)
+- ✅ 18 specs (ALL modules spec'd — spec-before-code rule satisfied)
+- ✅ 3 research reports (3,813 lines total, 73 cited sources)
+- ✅ WLT-Boot skeleton code (6 headers + 6 source files + Makefile)
+- ✅ WLT-Init skeleton code (7 headers + 7 source files + Makefile)
+- ✅ 5 build scripts (auto-commit, build, test, qemu-test, pre-commit-check)
+- ✅ Git initialized, 11 commits pushed to GitHub
+- ✅ QEMU 11.0.50 installed on PC (`C:\Program Files\qemu\`)
+- ✅ MSYS2 build tools installed (GCC 16.1, CMake 4.3, Ninja 1.13, Python 3.12)
+- ✅ seL4 camkes-vm-examples repo cloned (sel4-build/)
 - ✅ MCPilot v3.1 running on PC (77 tools)
-- ✅ Fixed StartMCPilot.vbs deployed (uses Process env, no trailing-space bug)
+- ✅ Night shift plan + checklist ready
 
-### What's NOT Done
-- ❌ Phase 1 not started (bootloader, seL4 integration, etc.)
-- ❌ Cross-compiler (gcc-x86-64) not installed
-- ❌ Rust not installed
-- ❌ NASM not installed
-- ❌ No specs written yet (need specs before code)
-- ❌ No ADRs written yet
+### What's NOT Done (Tonight's Night Shift)
+- ❌ seL4 clean build (needs 3-4 GB RAM — waiting for night shift)
+- ❌ QEMU boot test (needs build to succeed first)
+- ❌ WLT-Boot implementation (skeleton has TODOs)
+- ❌ WLT-Init implementation (skeleton has TODOs)
+- ❌ Rust installation (needed for wlt-pkg, wlt-net, etc.)
+- ❌ NASM installation (needed for assembly in bootloader)
 
-### Next Steps (When User Says "Go")
-1. Write spec for WLT-Boot (bootloader)
-2. Write ADR-01 (UEFI vs BIOS)
-3. Write ADR-02 (seL4 as base)
-4. Install cross-compiler + Rust + NASM on PC
-5. Start Phase 1, Week 1: bootloader
+### Next Steps (Tonight 11 PM)
+1. **11 PM:** User closes all apps, restarts MCPilot, says "night shift start"
+2. **Verify RAM > 3 GB** (if not, skip build, do code implementation)
+3. **seL4 clean build** (the 3-4 GB hurdle)
+4. **QEMU boot test** (verify seL4 + Linux works)
+5. **WLT-Boot implementation** (fill in TODOs)
+6. **WLT-Init implementation** (fill in TODOs)
+7. **6 AM:** Final commit, morning report
 
 ---
 
@@ -248,3 +269,15 @@ This is a comprehensive read-only audit framework for web projects. It covers:
 ---
 
 *Read this file first when context resets. Then read ENGINEERING_FRAMEWORK.md and AGENT_ORCHESTRATION.md.*
+
+---
+
+## 11. TIMEZONE + CLOCK
+
+- **User timezone:** Asia/Kolkata (IST, UTC+5:30)
+- **How to check current Delhi time:** `TZ="Asia/Kolkata" date +"%Y-%m-%d %H:%M:%S IST (%A)"`
+- **System clock is UTC:** `date -u` gives UTC time
+- **NEVER assume time of day** — always check with the command above before saying "good morning/night" or planning schedules
+- **Night shift hours (IST):** 11 PM - 6 AM (low server load, user asleep)
+- **Day hours (IST):** 9 AM - 11 PM (user active, expect interruptions)
+
