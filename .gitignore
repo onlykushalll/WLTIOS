@@ -1,0 +1,41 @@
+# WLTIOS Build Artifacts
+*.iso
+*.img
+*.bin
+*.elf
+*.o
+*.a
+*.so
+*.ko
+
+# Build directories
+build/
+out/
+target/
+
+# QEMU state
+*.qcow2
+*.vmdk
+*.vdi
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Secrets / keys
+*.key
+*.pem
+*.cert
+secrets/
