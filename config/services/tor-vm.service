@@ -1,0 +1,12 @@
+[wlt-service]
+name = tor-vm
+exec = /usr/bin/wlt-tor-vm
+args = --memory 512M --identity-key key-vault
+user = root
+
+[config]
+depends = key-vault
+tor_required = no
+restart_on_crash = yes
+restart_backoff_ms = 5000
+priority = critical

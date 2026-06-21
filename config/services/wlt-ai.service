@@ -1,0 +1,12 @@
+[wlt-service]
+name = wlt-ai
+exec = /usr/bin/wlt-ai
+args = --model local --hotword "hey wltios"
+user = wlt
+
+[config]
+depends = wlt-shell
+tor_required = no
+restart_on_crash = yes
+restart_backoff_ms = 5000
+priority = normal

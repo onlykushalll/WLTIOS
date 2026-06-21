@@ -1,0 +1,12 @@
+[wlt-service]
+name = wlt-net
+exec = /usr/bin/wltnet
+args = --tor-socks 127.0.0.1:9050 --tor-dns 127.0.0.1:5353
+user = wlt-net
+
+[config]
+depends = tor-vm
+tor_required = yes
+restart_on_crash = yes
+restart_backoff_ms = 2000
+priority = critical

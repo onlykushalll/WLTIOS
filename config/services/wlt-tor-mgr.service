@@ -1,0 +1,12 @@
+[wlt-service]
+name = wlt-tor-mgr
+exec = /usr/bin/wlttor
+args = --monitor --kill-switch
+user = wlt
+
+[config]
+depends = wlt-net
+tor_required = yes
+restart_on_crash = yes
+restart_backoff_ms = 1000
+priority = critical

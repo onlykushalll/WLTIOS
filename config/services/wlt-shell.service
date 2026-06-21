@@ -1,0 +1,12 @@
+[wlt-service]
+name = wlt-shell
+exec = /usr/bin/wlt-shell
+args = --compositor wayland-0
+user = wlt
+
+[config]
+depends = wlt-compositor
+tor_required = no
+restart_on_crash = yes
+restart_backoff_ms = 1000
+priority = normal

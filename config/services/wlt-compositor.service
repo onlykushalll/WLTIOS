@@ -1,0 +1,12 @@
+[wlt-service]
+name = wlt-compositor
+exec = /usr/bin/wlt-compositor
+args = --config /etc/wlt/compositor.conf
+user = wlt
+
+[config]
+depends = wlt-net
+tor_required = no
+restart_on_crash = yes
+restart_backoff_ms = 2000
+priority = critical

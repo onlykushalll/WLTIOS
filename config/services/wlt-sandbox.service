@@ -1,0 +1,12 @@
+[wlt-service]
+name = wlt-sandbox
+exec = /usr/bin/wlt-sandboxd
+args = --cgroup /sys/fs/cgroup/wlt --namespace pid,net,mnt,ipc,uts
+user = root
+
+[config]
+depends = wlt-net
+tor_required = no
+restart_on_crash = yes
+restart_backoff_ms = 1000
+priority = critical

@@ -1,0 +1,12 @@
+[wlt-service]
+name = key-vault
+exec = /usr/bin/wlt-keyvault-bridge
+args = --socket /run/key-vault.sock
+user = root
+
+[config]
+depends =
+tor_required = no
+restart_on_crash = yes
+restart_backoff_ms = 1000
+priority = critical
