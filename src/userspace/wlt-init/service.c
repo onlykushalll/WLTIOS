@@ -9,12 +9,15 @@
  */
 
 #include "service.h"
+#include "dependency.h"
+#include "tor.h"
 #include "log.h"
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <string.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
@@ -25,8 +28,16 @@
 static char *
 trim(char *str)
 {
-    while (*str && isspace((unsigned char)*str))
-        str++;
+    /* Find first non-space */
+    char *start = str;
+    while (*start && isspace((unsigned char)*start))
+        start++;
+
+    /* Shift string to remove leading spaces */
+    if (start != str)
+        memmove(str, start, strlen(start) + 1);
+
+    /* Trim trailing spaces */
     if (*str)
     {
         char *end = str + strlen(str) - 1;

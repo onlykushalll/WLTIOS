@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,6 +33,7 @@ typedef enum {
     WLT_INIT_ERR_TIMEOUT = -6,
     WLT_INIT_ERR_TOR_NOT_READY = -7,
     WLT_INIT_ERR_KEYVAULT = -8,
+    WLT_INIT_ERR_PARSE = -9,
 } wlt_init_error_t;
 
 /* ─── Constants ──────────────────────────────────────── */
