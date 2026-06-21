@@ -6,6 +6,16 @@
  * @dependencies: loader.h, memory.h, console.h, boot.h
  * @tested_by: tests/boot/loader_test.c
  * @spec: docs/specs/wlt-boot.md
+ * @adr: docs/adr/01-uefi-vs-bios.md, docs/adr/02-sel4-as-base.md
+ *
+ * UEFI file I/O uses:
+ *   1. LocateProtocol(gEfiSimpleFileSystemProtocolGuid) → get SimpleFileSystem
+ *   2. SimpleFileSystem->OpenVolume() → get Root file handle
+ *   3. Root->Open(path) → get file handle
+ *   4. File->GetInfo(FileSize) → get file size
+ *   5. AllocatePool(size) → allocate buffer
+ *   6. File->Read(buffer, size) → read file
+ *   7. File->Close() → close file
  */
 
 #include "loader.h"
@@ -17,30 +27,28 @@
 
 #define EI_NIDENT  16
 
-/* ELF magic */
 #define ELFMAG0    0x7f
 #define ELFMAG1    'E'
 #define ELFMAG2    'L'
 #define ELFMAG3    'F'
 
-/* ELF class */
 #define ELFCLASS32  1
 #define ELFCLASS64  2
 
-/* ELF data encoding */
-#define ELFDATA2LSB 1  /* Little endian */
-#define ELFDATA2MSB 2  /* Big endian */
+#define ELFDATA2LSB 1
+#define ELFDATA2MSB 2
 
-/* ELF object type */
-#define ET_EXEC    2   /* Executable */
-#define ET_DYN     3   /* Shared object (PIE) */
+#define ET_EXEC    2
+#define ET_DYN     3
 
-/* Program header types */
 #define PT_NULL    0
-#define PT_LOAD    1   /* Loadable segment */
+#define PT_LOAD    1
 #define PT_DYNAMIC 2
 #define PT_INTERP  3
 #define PT_NOTE    4
+
+#define EM_X86_64  62
+#define EM_386     3
 
 /* ─── ELF64 Structures ──────────────────────────────── */
 
@@ -72,29 +80,231 @@ typedef struct {
     uint64_t p_align;
 } elf64_phdr_t;
 
-#define EM_X86_64  62
+/* ─── UEFI Types (minimal) ──────────────────────────── */
 
-/* ─── Internal: Read file (UEFI stub) ───────────────── */
+typedef unsigned long long EFI_STATUS;
+typedef void *EFI_HANDLE;
+
+typedef struct {
+    uint64_t Revision;
+    void *ParentHandle;
+    void *SystemTable;
+    void *DeviceHandle;
+    void *FilePath;
+    void *Reserved;
+    uint32_t LoadOptionsSize;
+    void *LoadOptions;
+    void *ImageBase;
+    uint64_t ImageSize;
+    void *CodeType;
+    void *DataType;
+    void *ImageErrorType;
+    uint64_t ImageError;
+    uint64_t ImageSize2;
+    void *LoadOptions2;
+} EFI_LOADED_IMAGE_PROTOCOL;
+
+typedef struct {
+    uint64_t Revision;
+    EFI_STATUS (*OpenVolume)(void *This, void **Root);
+} EFI_SIMPLE_FILE_SYSTEM_PROTOCOL;
+
+typedef struct {
+    uint64_t Revision;
+    EFI_STATUS (*Open)(void *This, void **NewHandle, CHAR16 *FileName,
+                       uint64_t OpenMode, uint64_t Attributes);
+    EFI_STATUS (*Close)(void *This);
+    EFI_STATUS (*Delete)(void *This);
+    EFI_STATUS (*Read)(void *This, uint64_t *BufferSize, void *Buffer);
+    EFI_STATUS (*Write)(void *This, uint64_t *BufferSize, void *Buffer);
+    EFI_STATUS (*GetPosition)(void *This, uint64_t *Position);
+    EFI_STATUS (*SetPosition)(void *This, uint64_t Position);
+    EFI_STATUS (*GetInfo)(void *This, void *InformationType,
+                          uint64_t *BufferSize, void *Buffer);
+    EFI_STATUS (*SetInfo)(void *This, void *InformationType,
+                          uint64_t BufferSize, void *Buffer);
+    EFI_STATUS (*Flush)(void *This);
+} EFI_FILE_PROTOCOL;
+
+/* UEFI GUIDs (16 bytes each) */
+typedef struct {
+    uint32_t Data1;
+    uint16_t Data2;
+    uint16_t Data3;
+    uint8_t  Data4[8];
+} EFI_GUID;
+
+/* gEfiSimpleFileSystemProtocolGuid */
+static const EFI_GUID gEfiSimpleFileSystemProtocolGuid = {
+    0x0964E5B22, 0x6459, 0x11D2, {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}
+};
+
+/* gEfiLoadedImageProtocolGuid */
+static const EFI_GUID gEfiLoadedImageProtocolGuid = {
+    0x5B1B31A1, 0x9562, 0x11D2, {0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}
+};
+
+/* EFI_FILE_INFO GUID */
+static const EFI_GUID gEfiFileInfoGuid = {
+    0x09576E92, 0x6D3F, 0x11D2, {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}
+};
+
+/* UEFI status codes */
+#define EFI_SUCCESS             0
+#define EFI_NOT_FOUND           EFIERR(14)
+#define EFI_BUFFER_TOO_SMALL    EFIERR(5)
+#define EFIERR(x)               (0x8000000000000000ULL | (x))
+
+/* UEFI boot services (partial — only what we need) */
+typedef struct {
+    void *padding[11];  /* Offset to LocateProtocol */
+    EFI_STATUS (*LocateProtocol)(EFI_GUID *Protocol, void *Registration,
+                                  void **Interface);
+    void *padding2[2];
+    EFI_STATUS (*AllocatePool)(uint32_t PoolType, uint64_t Size, void **Buffer);
+    EFI_STATUS (*FreePool)(void *Buffer);
+} efi_boot_services_t;
+
+/* EFI system table (partial) */
+typedef struct {
+    char dummy[56];
+    void *BootServices;
+} efi_system_table_t;
+
+/* Module state */
+static efi_system_table_t *g_st = NULL;
+static efi_boot_services_t *g_bs = NULL;
+
+/* ─── Internal: Convert ASCII path to UEFI CHAR16 ──── */
+
+static void
+ascii_to_char16(const char *ascii, CHAR16 *unicode, size_t max)
+{
+    size_t i;
+    for (i = 0; ascii[i] != '\0' && i < max - 1; i++)
+    {
+        unicode[i] = (CHAR16)ascii[i];
+    }
+    unicode[i] = 0;
+}
+
+/* ─── Internal: Read file via UEFI SimpleFileSystem ── */
 
 static wlt_boot_error_t
 read_file(const char *path, uint8_t **data_out, size_t *size_out)
 {
-    /* TODO(wlt-boot): Implement via UEFI SimpleFileSystemProtocol */
-    /* Steps: */
-    /*   1. LocateProtocol(gEfiSimpleFileSystemProtocolGuid) */
-    /*   2. OpenVolume() to get root file handle */
-    /*   3. Open(path) to get file handle */
-    /*   4. GetInfo(FileSize) to get file size */
-    /*   5. AllocatePool(size) for buffer */
-    /*   6. Read(buffer, size) */
-    /*   7. Close file */
+    EFI_STATUS status;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs = NULL;
+    EFI_FILE_PROTOCOL *root = NULL;
+    EFI_FILE_PROTOCOL *file = NULL;
+    CHAR16 wpath[256];
+    uint8_t *buffer = NULL;
+    uint64_t file_size = 0;
+    uint64_t buf_size;
 
-    /* For now, return error (no UEFI context) */
-    (void)path;
-    *data_out = NULL;
-    *size_out = 0;
-    wlt_console_warn("File reading not yet implemented (UEFI stub)");
-    return WLT_BOOT_ERR_IO;
+    if (path == NULL || data_out == NULL || size_out == NULL)
+        return WLT_BOOT_ERR_INVALID_ARG;
+
+    /* Get boot services from system table */
+    if (g_st == NULL || g_st->BootServices == NULL)
+    {
+        wlt_console_warn("No UEFI boot services available");
+        return WLT_BOOT_ERR_IO;
+    }
+    g_bs = (efi_boot_services_t *)g_st->BootServices;
+
+    /* Step 1: Locate SimpleFileSystem protocol */
+    status = g_bs->LocateProtocol((EFI_GUID *)&gEfiSimpleFileSystemProtocolGuid,
+                                   NULL, (void **)&fs);
+    if (status != EFI_SUCCESS || fs == NULL)
+    {
+        wlt_console_error("Failed to locate SimpleFileSystem protocol");
+        return WLT_BOOT_ERR_IO;
+    }
+
+    /* Step 2: Open volume (get root directory) */
+    status = fs->OpenVolume(fs, (void **)&root);
+    if (status != EFI_SUCCESS || root == NULL)
+    {
+        wlt_console_error("Failed to open volume");
+        return WLT_BOOT_ERR_IO;
+    }
+
+    /* Step 3: Convert path to CHAR16 */
+    ascii_to_char16(path, wpath, sizeof(wpath) / sizeof(CHAR16));
+
+    /* Step 4: Open file */
+    status = root->Open(root, (void **)&file, wpath, 1 /* READ */, 0);
+    if (status != EFI_SUCCESS || file == NULL)
+    {
+        wlt_console_printf("Failed to open file: %s\n", path);
+        root->Close(root);
+        return WLT_BOOT_ERR_NOT_FOUND;
+    }
+
+    /* Step 5: Get file size via GetInfo */
+    buf_size = 0;
+    status = file->GetInfo(file, (void *)&gEfiFileInfoGuid, &buf_size, NULL);
+    if (status == EFI_BUFFER_TOO_SMALL && buf_size > 0)
+    {
+        /* Allocate buffer for file info */
+        uint8_t *info_buf;
+        g_bs->AllocatePool(2 /* LoaderData */, buf_size, (void **)&info_buf);
+        if (info_buf != NULL)
+        {
+            status = file->GetInfo(file, (void *)&gEfiFileInfoGuid,
+                                    &buf_size, info_buf);
+            if (status == EFI_SUCCESS)
+            {
+                /* File size is at offset 8 in EFI_FILE_INFO (after Size + Guid) */
+                file_size = *(uint64_t *)(info_buf + 8);
+            }
+            g_bs->FreePool(info_buf);
+        }
+    }
+
+    if (file_size == 0)
+    {
+        /* Fallback: try reading with 0 size to get required size */
+        file_size = 1024 * 1024;  /* Assume max 1MB */
+    }
+
+    wlt_console_printf("File size: %llu bytes\n",
+                        (unsigned long long)file_size);
+
+    /* Step 6: Allocate buffer for file data */
+    status = g_bs->AllocatePool(2 /* LoaderData */, file_size,
+                                 (void **)&buffer);
+    if (status != EFI_SUCCESS || buffer == NULL)
+    {
+        wlt_console_error("Failed to allocate file buffer");
+        file->Close(file);
+        root->Close(root);
+        return WLT_BOOT_ERR_NOMEM;
+    }
+
+    /* Step 7: Read file */
+    buf_size = file_size;
+    status = file->Read(file, &buf_size, buffer);
+    if (status != EFI_SUCCESS)
+    {
+        wlt_console_error("Failed to read file");
+        g_bs->FreePool(buffer);
+        file->Close(file);
+        root->Close(root);
+        return WLT_BOOT_ERR_IO;
+    }
+
+    /* Step 8: Close file + root */
+    file->Close(file);
+    root->Close(root);
+
+    *data_out = buffer;
+    *size_out = buf_size;
+
+    wlt_console_printf("Read %llu bytes from %s\n",
+                        (unsigned long long)buf_size, path);
+    return WLT_BOOT_OK;
 }
 
 /* ─── Public API ─────────────────────────────────────── */
@@ -230,23 +440,14 @@ wlt_loader_load(const char *path, wlt_kernel_image_t *kernel)
                             (unsigned long long)phdr->p_filesz,
                             (unsigned long long)phdr->p_memsz);
 
-        /* TODO(wlt-boot): Allocate physical memory at p_paddr */
-        /* For now, just record the first load address */
-
         if (load_address == 0)
         {
             load_address = phdr->p_paddr;
         }
 
-        /* TODO(wlt-boot): Copy segment data from file to p_paddr */
-        /* memcpy((void*)phdr->p_paddr, elf_data + phdr->p_offset, phdr->p_filesz); */
-
-        /* Zero-fill BSS (memsz > filesz) */
-        /* if (phdr->p_memsz > phdr->p_filesz) */
-        /* { */
-        /*     memset((void*)(phdr->p_paddr + phdr->p_filesz), 0, */
-        /*            phdr->p_memsz - phdr->p_filesz); */
-        /* } */
+        /* TODO(wlt-boot): Allocate physical memory at p_paddr via UEFI */
+        /* and copy segment data + zero-fill BSS */
+        /* This requires UEFI AllocatePages + memcpy */
     }
 
     kernel->load_address = load_address;
@@ -256,7 +457,15 @@ wlt_loader_load(const char *path, wlt_kernel_image_t *kernel)
                         (unsigned long long)kernel->load_address,
                         kernel->size);
 
-    /* TODO(wlt-boot): Free elf_data buffer */
+    /* Note: elf_data buffer should be freed after segments are copied */
+    /* For now, keep it (will be freed when boot services are exited) */
 
     return WLT_BOOT_OK;
+}
+
+/* Set system table (called from efi_main) */
+void
+wlt_loader_set_system_table(void *system_table)
+{
+    g_st = (efi_system_table_t *)system_table;
 }

@@ -38,6 +38,12 @@ wlt_boot_error_t wlt_loader_verify_elf(const uint8_t *data, size_t size);
  */
 uint64_t wlt_loader_get_entry(const uint8_t *elf_data);
 
+/**
+ * Set UEFI system table (called from efi_main)
+ * Required for UEFI file I/O operations
+ */
+void wlt_loader_set_system_table(void *system_table);
+
 #ifdef __cplusplus
 }
 #endif

@@ -19,6 +19,9 @@
 /* UEFI system table (set in efi_main) */
 static void *g_system_table = NULL;
 
+/* Forward declaration — defined in loader.c */
+extern void wlt_loader_set_system_table(void *system_table);
+
 int64_t
 efi_main(void *image_handle, void *system_table)
 {
@@ -27,8 +30,9 @@ efi_main(void *image_handle, void *system_table)
     wlt_kernel_image_t kernel;
     wlt_boot_error_t err;
 
-    /* 1. Initialize console */
+    /* 1. Initialize console + pass system table to modules */
     wlt_console_init(system_table);
+    wlt_loader_set_system_table(system_table);
     g_system_table = system_table;
     wlt_console_clear();
     wlt_console_info("WLTIOS Boot Loader v" WLT_BOOT_VERSION);
