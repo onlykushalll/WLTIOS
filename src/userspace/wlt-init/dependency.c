@@ -76,6 +76,11 @@ wlt_dependency_resolve(const wlt_init_t *init,
     while (q_head < q_tail)
     {
         int idx = queue[q_head++];
+
+        /* Safety: don't overflow order array */
+        if (*count >= WLT_INIT_MAX_SERVICES)
+            break;
+
         order[(*count)++] = (size_t)idx;
 
         /* For each service that depends on this one, reduce in_degree */
@@ -85,9 +90,10 @@ wlt_dependency_resolve(const wlt_init_t *init,
             {
                 /* Check if service j depends on service idx */
                 const wlt_service_t *svc = &init->services[j];
-                for (size_t d = 0; d < svc->depend_count; d++)
+                for (size_t d = 0; d < svc->depend_count && d < 8; d++)
                 {
-                    if (strcmp(svc->depends[d],
+                    if (svc->depends[d][0] != '\0' &&
+                        strcmp(svc->depends[d],
                                init->services[idx].name) == 0)
                     {
                         in_degree[j]--;

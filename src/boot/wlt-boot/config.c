@@ -19,18 +19,22 @@
 static char *
 trim(char *str)
 {
-    /* Trim leading whitespace */
-    while (*str && isspace((unsigned char)*str))
-        str++;
+    /* Find first non-space */
+    char *start = str;
+    while (*start && isspace((unsigned char)*start))
+        start++;
 
-    /* Trim trailing whitespace */
+    /* Shift string to remove leading spaces */
+    if (start != str)
+        memmove(str, start, strlen(start) + 1);
+
+    /* Trim trailing spaces */
     if (*str)
     {
         char *end = str + strlen(str) - 1;
         while (end > str && isspace((unsigned char)*end))
             *end-- = '\0';
     }
-
     return str;
 }
 

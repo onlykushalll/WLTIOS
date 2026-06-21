@@ -14,6 +14,14 @@
 
 static FILE *g_log_file = NULL;
 
+/* Auto-init to stderr if wlt_log_init never called */
+static void
+ensure_log_file(void)
+{
+    if (g_log_file == NULL)
+        g_log_file = stderr;
+}
+
 void
 wlt_log_init(const char *path)
 {
@@ -37,6 +45,8 @@ wlt_log_close(void)
 void
 wlt_log(wlt_log_level_t level, const char *fmt, ...)
 {
+    ensure_log_file();
+
     const char *level_str[] = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
     time_t now;
     struct tm *tm;
