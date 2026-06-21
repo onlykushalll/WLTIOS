@@ -39,3 +39,6 @@ logs/
 *.pem
 *.cert
 secrets/
+
+# seL4 build (cloned repo, not our code)
+sel4-build/
