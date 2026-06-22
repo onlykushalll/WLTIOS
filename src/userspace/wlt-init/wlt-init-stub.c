@@ -32,6 +32,7 @@
 #include <sys/reboot.h>
 #include <linux/reboot.h>
 #include <errno.h>
+#include <sys/mount.h>
 
 #define WLT_SHELL_PATH  "/bin/wlt-shell"
 #define FALLBACK_SHELL  "/bin/sh"
