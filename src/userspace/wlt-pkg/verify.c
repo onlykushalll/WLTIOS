@@ -60,7 +60,7 @@ static void sha256_transform(sha256_ctx *c, const uint8_t *d)
     c->state[4]+=e;c->state[5]+=f;c->state[6]+=g;c->state[7]+=h;
 }
 
-static void sha256_buf(const uint8_t *data, size_t len, uint8_t out[32])
+__attribute__((unused)) static void sha256_buf(const uint8_t *data, size_t len, uint8_t out[32])
 {
     sha256_ctx c;
     c.state[0]=0x6a09e667;c.state[1]=0xbb67ae85;c.state[2]=0x3c6ef372;c.state[3]=0xa54ff53a;
@@ -91,7 +91,7 @@ static void sha256_buf(const uint8_t *data, size_t len, uint8_t out[32])
     c.data[62]=(c.bitlen>>8)&0xFF;c.data[63]=c.bitlen&0xFF;
     sha256_transform(&c, c.data);
 
-    for (i=0;i<8;i++) {
+    for (int i=0;i<8;i++) {
         out[i*4]=(c.state[i]>>24)&0xFF;out[i*4+1]=(c.state[i]>>16)&0xFF;
         out[i*4+2]=(c.state[i]>>8)&0xFF;out[i*4+3]=c.state[i]&0xFF;
     }

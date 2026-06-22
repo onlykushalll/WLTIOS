@@ -12,6 +12,7 @@
  */
 
 #include "partition.h"
+#pragma GCC diagnostic ignored "-Wformat-truncation"
 
 #include <stdlib.h>
 #include <string.h>

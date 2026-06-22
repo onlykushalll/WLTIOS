@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 /**
  * @file launch.c
  * @brief App launcher: fork, sandbox setup, exec

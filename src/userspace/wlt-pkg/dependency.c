@@ -11,6 +11,9 @@
 #include <string.h>
 #include <stdio.h>
 
+/* Forward declaration — defined at end of file */
+static size_t g_db_count_hack(void);
+
 wlt_pkg_error_t
 wlt_pkg_resolve_dependencies(const char *package_name,
                               char resolved[][WLT_PKG_MAX_NAME],
@@ -23,6 +26,7 @@ wlt_pkg_resolve_dependencies(const char *package_name,
 
     /* Find the package in the database */
     wlt_pkg_package_t *pkg = NULL;
+ (void)pkg; /* TODO: real impl will use this */
     for (size_t i = 0; i < g_db_count_hack(); i++)
     {
         /* TODO(wlt-pkg): Real implementation — traverse dependency graph */

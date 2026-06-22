@@ -369,6 +369,7 @@ wlt_net_mac_randomize_now(wlt_net_state_t *state)
     return wlt_mac_randomize(state->iface);
 }
 
+#ifndef WLT_TESTING
 /* ─── CLI ────────────────────────────────────────────── */
 
 static int
@@ -498,3 +499,4 @@ main(int argc, char **argv)
     wlt_net_log_close();
     return rc;
 }
+#endif /* WLT_TESTING */

@@ -86,7 +86,7 @@ socks5_connect(int sock, const char *host, uint16_t port)
     uint8_t drain[256];
     while (extra > 0)
     {
-        int n = recv(sock, drain, extra > sizeof(drain) ? sizeof(drain) : extra, 0);
+        int n = recv(sock, drain, (size_t)extra > sizeof(drain) ? (int)sizeof(drain) : (int)extra, 0);
         if (n <= 0)
             return WLT_PKG_ERR_NETWORK;
         extra -= n;

@@ -699,7 +699,10 @@ int wlt_tor_cli_main(int argc, char **argv)
 /* Process entry: forward to the CLI dispatcher. Keeping main() trivial lets
  * the same object set be linked into both the `wlttor` binary and a larger
  * WLTIOS composite that calls wlt_tor_cli_main() directly. */
+#ifndef WLT_TESTING
 int main(int argc, char **argv)
 {
     return wlt_tor_cli_main(argc, argv);
 }
+
+#endif /* WLT_TESTING */

@@ -8,6 +8,7 @@
  */
 
 #include "shell.h"
+#pragma GCC diagnostic ignored "-Wformat-truncation"
 #include <string.h>
 #include <stdio.h>
 #include <dirent.h>

@@ -8,6 +8,10 @@
  */
 
 #include "pkg.h"
+#include <errno.h>
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+#include <errno.h>
+#pragma GCC diagnostic ignored "-Wformat-truncation"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>

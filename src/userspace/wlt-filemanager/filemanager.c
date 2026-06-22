@@ -9,6 +9,7 @@
  */
 
 #include "filemanager.h"
+#pragma GCC diagnostic ignored "-Wformat-truncation"
 #include "operations.h"
 #include <dirent.h>
 #include <sys/stat.h>
