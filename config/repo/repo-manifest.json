@@ -1,0 +1,66 @@
+{
+  "name": "WLTIOS Official Package Repository",
+  "version": "1.0.0",
+  "url": "https://repo.wltios.org",
+  "tor_url": "http://wltiosrepo.onion",
+  "packages": [
+    {
+      "name": "wlt-terminal",
+      "version": "1.0.0",
+      "size": 45000,
+      "sha256": "auto-generated",
+      "description": "WLTIOS Terminal Emulator"
+    },
+    {
+      "name": "wlt-filemanager",
+      "version": "1.0.0",
+      "size": 32000,
+      "sha256": "auto-generated",
+      "description": "WLTIOS File Manager"
+    },
+    {
+      "name": "wlt-tor-browser",
+      "version": "1.0.0",
+      "size": 95000000,
+      "sha256": "auto-generated",
+      "description": "Tor Browser (Firefox fork with privacy patches)"
+    },
+    {
+      "name": "wlt-ai-kairos",
+      "version": "1.0.0",
+      "size": 2100000,
+      "sha256": "auto-generated",
+      "description": "Kairos AI Assistant"
+    },
+    {
+      "name": "wlt-text-editor",
+      "version": "1.0.0",
+      "size": 28000,
+      "sha256": "auto-generated",
+      "description": "Simple text editor"
+    },
+    {
+      "name": "wlt-image-viewer",
+      "version": "1.0.0",
+      "size": 35000,
+      "sha256": "auto-generated",
+      "description": "Image viewer"
+    },
+    {
+      "name": "wlt-media-player",
+      "version": "1.0.0",
+      "size": 670000,
+      "sha256": "auto-generated",
+      "description": "Media player (audio/video)"
+    },
+    {
+      "name": "wlt-calculator",
+      "version": "1.0.0",
+      "size": 12000,
+      "sha256": "auto-generated",
+      "description": "Calculator"
+    }
+  ],
+  "signing_key": "wltios-repo-signing-key-1",
+  "last_updated": "2026-06-22T00:00:00Z"
+}
