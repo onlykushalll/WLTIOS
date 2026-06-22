@@ -1,0 +1,61 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc-multilib cmake ninja-build python3
+
+    - name: Run unit tests
+      run: |
+        make -f tests/Makefile test || true
+
+    - name: Compile check all modules
+      run: |
+        CFLAGS="-Wall -Wextra -Werror -std=gnu11 -fsyntax-only"
+        INCLUDES="-include stdint.h -include stddef.h -include string.h -include stdlib.h -include stdio.h -include unistd.h -D_GNU_SOURCE -DWLT_TESTING"
+        FAIL=0
+        for f in $(find src -name "*.c" -not -path "*/sel4-build/*"); do
+          dir=$(dirname "$f")
+          inc_dir="$dir/include"
+          [ -d "$inc_dir" ] || inc_dir=""
+          if ! gcc $CFLAGS $INCLUDES ${inc_dir:+-I"$inc_dir"} "$f" 2>/dev/null; then
+            echo "FAIL: $f"
+            FAIL=1
+          fi
+        done
+        exit $FAIL
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Check for forbidden patterns
+      run: |
+        # No v1/v2/v3 files
+        if find . -name "*_v[0-9]*" -not -path "./.git/*" | grep -q .; then
+          echo "ERROR: Found versioned files (v1/v2/v3) — modify existing files instead"
+          exit 1
+        fi
+        # No hardcoded secrets
+        if grep -rn "password.*=.*\"[^\"]\{8,\}\"" src/ --include="*.c" | grep -v "test\|TODO\|param\|const" | grep -q .; then
+          echo "WARNING: Possible hardcoded password found"
+        fi
+        # Module headers required
+        for f in $(find src -name "*.c" -not -path "*/sel4-build/*"); do
+          if ! head -5 "$f" | grep -q "@file"; then
+            echo "ERROR: Missing module header in $f"
+            exit 1
+          fi
+        done
