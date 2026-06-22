@@ -1,0 +1,1 @@
+[chore] remove temp cleanup script from repo root

@@ -1,0 +1,1 @@
+chore: remove temp scripts from repo root
