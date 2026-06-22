@@ -1,6 +1,7 @@
 # Spec: Boot Verifier PD (seL4 Partition)
 
 > **Status:** Draft (ready for implementation)
+> **Amended:** 2026-06-22 — removed files.c (Microkit PD has no filesystem), clarified memory-only runtime verification
 > **Phase:** 3 (Month 15)
 > **Dependencies:** seL4, Microkit
 > **ADR references:** ADR-02 (seL4 base), ADR-04 (Microkit)
@@ -55,7 +56,8 @@ The Boot Verifier PD is an seL4 Protection Domain that verifies the integrity of
 | Linux kernel modules | At boot | Per-module SHA-256 |
 | WLT-Boot binary | At boot | Self-verify (measured boot) |
 | seL4 PD binaries | At boot | Per-PD SHA-256 |
-| Critical config files | At boot + runtime (every 60s) | SHA-256 |
+| Critical in-memory binaries | At boot + runtime (every 60s) | SHA-256 |
+| Critical config files | At boot only (not runtime) | SHA-256 (pre-computed at build, embedded in PD) |
 
 ## Dependencies
 
