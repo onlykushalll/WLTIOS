@@ -25,6 +25,7 @@ extern void wlt_loader_set_system_table(void *system_table);
 int64_t
 efi_main(void *image_handle, void *system_table)
 {
+ (void)image_handle;
     wlt_boot_config_t config;
     wlt_memory_map_t mem_map;
     wlt_kernel_image_t kernel;

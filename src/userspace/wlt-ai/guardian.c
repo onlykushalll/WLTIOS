@@ -24,6 +24,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 typedef enum {
     WLT_GUARDIAN_OK = 0,

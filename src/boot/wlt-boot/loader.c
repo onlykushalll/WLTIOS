@@ -19,6 +19,9 @@
  */
 
 #include "loader.h"
+#ifndef CHAR16
+#define CHAR16 uint16_t
+#endif
 #include "memory.h"
 #include "console.h"
 #include <string.h>

@@ -152,7 +152,8 @@ kairos_priv_sanitize_response(const char *input, char *output, size_t max_len)
                 strstr(pos, "height='1'") != NULL)
             {
                 /* Remove the tracking pixel tag */
-                size_t tag_len = end - pos + 1;
+                (void)0; /* tag_len removed — was unused */
+    size_t tag_len_unused = end - pos + 1;
                 memmove(pos, end + 1, strlen(end + 1) + 1);
                 continue;
             }
