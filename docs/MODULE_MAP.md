@@ -2,7 +2,7 @@
 
 > **Always current.** This is the map of every module in WLTIOS.
 > If a module isn't here, it doesn't exist (officially).
-> **Last updated:** 2026-06-22
+> **Last updated:** 2026-06-22 (Area 4: wlroots)
 
 ## Legend
 
