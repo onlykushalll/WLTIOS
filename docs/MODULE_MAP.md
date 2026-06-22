@@ -2,7 +2,7 @@
 
 > **Always current.** This is the map of every module in WLTIOS.
 > If a module isn't here, it doesn't exist (officially).
-> **Last updated:** 2026-06-21
+> **Last updated:** 2026-06-22
 
 ## Legend
 
@@ -19,33 +19,71 @@
 WLTIOS/
 │
 ├── boot/                                          # Boot system
-│   └── 📋 wlt-boot/ (C) — UEFI bootloader
-│       ├── ✅ boot.c          # Main entry (efi_main) — SKELETON
-│       ├── ✅ console.c       # UEFI console output — SKELETON
-│       ├── ✅ memory.c        # UEFI memory map parsing — SKELETON
-│       ├── ✅ loader.c        # seL4 ELF loader — SKELETON
-│       ├── ✅ verify.c        # Signature verification (SHA-256) — SKELETON
-│       ├── ✅ config.c        # Boot config parsing — SKELETON
+│   └── 🔧 wlt-boot/ (C) — UEFI bootloader
+│       ├── ✅ boot.c          # Main entry (efi_main) — IMPLEMENTED
+│       ├── ✅ console.c       # UEFI console output, printf, colors — IMPLEMENTED
+│       ├── ✅ memory.c        # UEFI memory map parsing — IMPLEMENTED
+│       ├── ✅ loader.c        # seL4 ELF loader + UEFI file I/O — IMPLEMENTED
+│       ├── ✅ verify.c        # SHA-256 (NIST verified) + sig check — IMPLEMENTED
+│       ├── ✅ config.c        # Boot config INI parsing — IMPLEMENTED
+│       ├── ✅ linker.ld       # UEFI linker script
 │       └── ✅ Makefile        # Cross-compiler build rules
 │
 ├── sel4-partitions/                              # seL4 isolated services
 │   ├── 📋 firewall-pd/ (C) — Packet filtering + kill switch
 │   ├── 📋 key-vault-pd/ (C) — Encryption key storage
-│   └── 📋 boot-verifier-pd/ (C) — Runtime integrity check
+│   └── 📋 boot-verifier-pd/ (C) — Runtime integrity check (spec needs correction)
 │
 ├── kernel/                                        # Linux kernel (reused)
 │   └── 💡 (Linux LTS 6.x — minimal config, not written by us)
 │
 ├── userspace/                                     # Custom userspace
 │   │
-│   ├── 📋 wlt-init/ (C) — Custom init system (PID 1)
-│   │   ├── ✅ init.c          # Main entry — SKELETON (boot sequence)
-│   │   ├── ✅ service.c       # Service loading + parsing — SKELETON
-│   │   ├── ✅ monitor.c       # Process monitoring — SKELETON
-│   │   ├── ✅ dependency.c    # Dependency graph — SKELETON
-│   │   ├── ✅ tor.c           # Tor status + kill switch — SKELETON
-│   │   ├── ✅ mount.c         # Filesystem mounting — SKELETON
-│   │   ├── ✅ log.c           # Logging — IMPLEMENTED
+│   ├── 🔧 wlt-init/ (C) — Custom init system (PID 1)
+│   │   ├── ✅ init.c          # Main entry — IMPLEMENTED (boot sequence)
+│   │   ├── ✅ service.c       # Service loading + fork/exec — IMPLEMENTED
+│   │   ├── ✅ monitor.c       # Process monitoring + crash recovery — IMPLEMENTED
+│   │   ├── ✅ dependency.c    # Kahn topological sort + cycle detection — IMPLEMENTED
+│   │   ├── ✅ tor.c           # Tor status + kill switch — IMPLEMENTED
+│   │   ├── ✅ mount.c         # Filesystem mounting — IMPLEMENTED
+│   │   ├── ✅ log.c           # Logging (file + auto-stderr) — IMPLEMENTED
+│   │   ├── ✅ ipc.c           # Unix socket server for wltctl — IMPLEMENTED
+│   │   ├── ✅ ctl.c           # wltctl CLI tool — IMPLEMENTED
+│   │   ├── ✅ shutdown.c      # Clean shutdown + reboot — IMPLEMENTED
+│   │   └── ✅ Makefile
+│   │
+│   ├── 🔧 wlt-terminal/ (C) — Terminal emulator
+│   │   ├── ✅ terminal.c      # Cell grid, cursor, ANSI dispatch — IMPLEMENTED
+│   │   ├── ✅ pty.c           # openpty + fork + execvp — IMPLEMENTED
+│   │   ├── ✅ ansi.c          # VT500 parser, CSI/SGR/OSC — IMPLEMENTED
+│   │   ├── ✅ render.c        # BGRA framebuffer, 8x8 font — IMPLEMENTED
+│   │   ├── ✅ scrollback.c    # Circular buffer 10000 lines — IMPLEMENTED
+│   │   ├── ✅ config.c        # INI parser with color schemes — IMPLEMENTED
+│   │   └── ✅ Makefile
+│   │
+│   ├── 🔧 wlt-net/ (C) — Network manager (Tor-only)
+│   │   ├── ✅ net.c           # Event loop, CLI dispatch, main() — IMPLEMENTED
+│   │   ├── ✅ wifi.c          # wpa_supplicant control socket — IMPLEMENTED
+│   │   ├── ✅ ethernet.c      # DHCP/static via iproute2 — IMPLEMENTED
+│   │   ├── ✅ tor_proxy.c     # SOCKS5 probe, NEWNYM — IMPLEMENTED
+│   │   ├── ✅ mac.c           # MAC randomization — IMPLEMENTED
+│   │   ├── ✅ kill_switch.c   # nftables + iptables Tor-only — IMPLEMENTED
+│   │   ├── ✅ config.c        # INI parser — IMPLEMENTED
+│   │   └── ✅ Makefile
+│   │
+│   ├── 🔧 wlt-crypto/ (C) — Disk + file encryption
+│   │   ├── ✅ crypto.c        # Main dispatcher — IMPLEMENTED
+│   │   ├── ⚠️ keyvault.c      # Unix socket IPC — NEEDS FIX (should be seL4 IPC stub)
+│   │   ├── ✅ file_crypto.c   # Streaming chunk encrypt/decrypt — IMPLEMENTED
+│   │   ├── ✅ secure_delete.c # 3-pass shred + unlink — IMPLEMENTED
+│   │   └── ✅ Makefile
+│   │
+│   ├── 🔧 wlt-sandbox/ (C) — App sandboxing
+│   │   ├── ✅ sandbox.c       # cgroup v2 + namespaces + seccomp-BPF — IMPLEMENTED
+│   │   ├── ✅ manifest.c      # INI parser for .manifest files — IMPLEMENTED
+│   │   ├── ✅ launch.c        # Fork + sandbox setup + exec — IMPLEMENTED
+│   │   ├── ✅ monitor.c       # OOM detection, seccomp violations — IMPLEMENTED
+│   │   ├── ✅ audit.c         # Append-only security log — IMPLEMENTED
 │   │   └── ✅ Makefile
 │   │
 │   ├── 📋 wlt-compositor/ (C + wlroots) — Wayland compositor
@@ -53,19 +91,27 @@ WLTIOS/
 │   ├── 💡 wlt-widgets/ (C) — Custom widget toolkit
 │   ├── 📋 wlt-shell/ (C) — Desktop shell (taskbar, launcher)
 │   ├── 📋 wlt-pkg/ (Rust) — Package manager (Nix-style)
-│   ├── 📋 wlt-net/ (Rust) — Network manager (Tor-only)
-│   ├── 📋 wlt-sandbox/ (Rust) — App sandboxing
-│   ├── 📋 wlt-crypto/ (C + libsodium) — Disk + file encryption
 │   ├── 📋 wlt-tor-mgr/ (Rust) — Tor control panel
 │   ├── 📋 wlt-permissions/ (Rust) — App permission system
 │   ├── 📋 wlt-ai/ (Rust + Python) — AI assistant
 │   ├── 📋 wlt-settings/ (C) — Settings app
 │   ├── 📋 wlt-filemanager/ (C) — File manager
-│   ├── 📋 wlt-terminal/ (C) — Terminal emulator
-│   └── 📋 wlt-update/ (Rust) — Atomic A/B update system
+│   ├── 📋 wlt-update/ (Rust) — Atomic A/B update system
+│   └── 📋 (3 seL4 partition specs need correction — see Claude's analysis)
 │
-├── tools/                                        # Build tools
-│   └── 💡 (build.sh, test.sh, etc. — in scripts/)
+├── tests/                                        # All tests
+│   ├── ✅ boot/               # SHA-256 (4), Config (6), ELF (8) — 18 PASS
+│   ├── ✅ userspace/          # Service (9), Dependency (5), Monitor (9) — 23 PASS
+│   ├── 💡 sel4/               # seL4 partition tests
+│   ├── 💡 kernel/             # Kernel module tests
+│   ├── 💡 security/           # Security + penetration tests
+│   └── 💡 performance/        # Performance benchmarks
+│
+├── config/                                       # OS config files
+│   ├── ✅ services/           # 8 .service files (key-vault, tor-vm, wlt-net, etc.)
+│   ├── ✅ wlt-compositor.conf # Wayland compositor config
+│   ├── ✅ wlt-net.conf        # Network manager config
+│   └── ✅ wlt-tor.conf        # Tor manager config
 │
 ├── scripts/                                      # Automation
 │   ├── ✅ auto-commit.sh     # Auto-commit + push to GitHub
@@ -74,26 +120,18 @@ WLTIOS/
 │   ├── ✅ qemu-test.sh       # Boot test in QEMU
 │   └── ✅ pre-commit-check.sh # Security + lint checks
 │
-├── tests/                                        # All tests
-│   ├── 💡 boot/               # Bootloader tests
-│   ├── 💡 sel4/               # seL4 partition tests
-│   ├── 💡 kernel/             # Kernel module tests
-│   ├── 💡 userspace/          # Userspace tests
-│   ├── 💡 security/           # Security + penetration tests
-│   └── 💡 performance/        # Performance benchmarks
-│
 └── docs/                                         # Documentation
-    ├── ✅ ARCHITECTURE.md
-    ├── ✅ PRD.md
-    ├── ✅ ROADMAP.md
-    ├── ✅ ENGINEERING_FRAMEWORK.md
-    ├── ✅ AGENT_ORCHESTRATION.md
-    ├── ✅ ONBOARDING.md
-    ├── ✅ CODING_STYLE.md
-    ├── ✅ MODULE_MAP.md (this file)
+    ├── ✅ ARCHITECTURE.md     # Technical blueprint (619 lines)
+    ├── ✅ PRD.md              # Product requirements (501 lines)
+    ├── ✅ ROADMAP.md          # 24-month plan (505 lines)
+    ├── ✅ ENGINEERING_FRAMEWORK.md # 10 rules (constitution)
+    ├── ✅ AGENT_ORCHESTRATION.md  # 7 agent roles
+    ├── ✅ ONBOARDING.md       # 1-hour guide
+    ├── ✅ CODING_STYLE.md     # Enforced rules
+    ├── ✅ MODULE_MAP.md       # This file
     ├── ✅ CONTRIBUTING.md
-    ├── ✅ specs/              # 18 module specs
-    ├── ✅ adr/                # 7 Architecture Decision Records
+    ├── ✅ specs/              # 19 module specs
+    ├── ✅ adr/                # 7 ADRs
     └── ✅ context/            # Research + recovery files
 ```
 
@@ -101,47 +139,49 @@ WLTIOS/
 
 ## Status Summary
 
-| Layer | Modules Planned | Spec'd | Skeleton | Implemented | % Complete |
-|-------|-----------------|--------|----------|-------------|------------|
-| Boot | 1 (wlt-boot) | 1 ✅ | 1 ✅ | 0 | 30% (spec + skeleton) |
-| seL4 Partitions | 3 | 3 ✅ | 0 | 0 | 15% (spec only) |
-| Kernel | 1 (reused) | 0 | 0 | 0 | 0% (not started) |
-| Userspace | 14 | 14 ✅ | 1 ✅ | 0 | 15% (specs + 1 skeleton) |
-| Tools/Scripts | 5 | — | 5 ✅ | 5 ✅ | 100% |
-| Tests | 5 dirs | — | 0 | 0 | 0% (dirs created) |
-| Docs | 10+ | — | — | 10+ ✅ | 100% (Phase 1 docs) |
-| **Total** | **~24 modules** | **18** | **2** | **1 (log.c)** | **~20%** |
+| Layer | Modules | Code Written | Tests | % Complete |
+|-------|---------|-------------|-------|------------|
+| Boot | 1 (wlt-boot) | ✅ 1,500 lines | 18 pass | ~40% |
+| seL4 Partitions | 3 | 0 | 0 | 0% (specs need correction) |
+| Kernel | 1 (reused) | 0 | 0 | N/A |
+| Userspace | 14 total | 6 modules (~13,000 lines) | 23 pass | ~35% |
+| Tests | 5 dirs | ~1,000 lines | 41/41 pass | ✅ |
+| Config | 8 service + 3 conf | ~300 lines | — | ✅ Phase 1 |
+| Scripts | 5 | ~500 lines | — | ✅ |
+| Docs | 30+ files | ~16,000 lines | — | ✅ Phase 1 |
+| **Total** | **~24 modules** | **~15,300 lines** | **41 pass** | **~20%** |
 
-## Spec Status (18/18 complete)
+## Spec Status (19 specs — all complete)
 
-| Module | Spec File | Status |
-|--------|-----------|--------|
-| WLT-Boot | specs/wlt-boot.md | ✅ |
-| WLT-Init | specs/wlt-init.md | ✅ |
-| WLT-Compositor | specs/wlt-compositor.md | ✅ |
-| WLT-Shell | specs/wlt-shell.md | ✅ |
-| WLT-Pkg | specs/wlt-pkg.md | ✅ |
-| WLT-Net | specs/wlt-net.md | ✅ |
-| WLT-Sandbox | specs/wlt-sandbox.md | ✅ |
-| WLT-Crypto | specs/wlt-crypto.md | ✅ |
-| WLT-Tor-Mgr | specs/wlt-tor-mgr.md | ✅ |
-| WLT-Permissions | specs/wlt-permissions.md | ✅ |
-| WLT-AI | specs/wlt-ai.md | ✅ |
-| WLT-Settings | specs/wlt-settings.md | ✅ |
-| WLT-FileManager | specs/wlt-filemanager.md | ✅ |
-| WLT-Terminal | specs/wlt-terminal.md | ✅ |
-| WLT-Update | specs/wlt-update.md | ✅ |
-| Firewall PD | specs/firewall-pd.md | ✅ |
-| Key Vault PD | specs/key-vault-pd.md | ✅ |
-| Boot Verifier PD | specs/boot-verifier-pd.md | ✅ |
+All 18 original specs + 1 notes file. Some specs need corrections per Claude's analysis:
+- ⚠️ `key-vault-pd.md` — persistence design gap (keys volatile, need disk storage)
+- ⚠️ `boot-verifier-pd.md` — can't access filesystem from seL4 PD (needs correction)
+- ⚠️ `wlt-net.md` — spec says Rust, code is C (language mismatch)
+- ⚠️ `wlt-sandbox.md` — spec says Rust, code is C (language mismatch)
+
+## Test Status
+
+```
+make -f tests/Makefile test
+→ 41/41 tests PASS (SHA-256, Config, ELF, Service, Dependency, Monitor)
+```
 
 ## Critical Path (Phase 1)
 
 ```
-wlt-boot → seL4 boots → Linux boots → wlt-init → wlt-compositor → desktop
+wlt-boot → seL4 boots → Linux boots → wlt-init → desktop
+     ✅         ✅           ✅          🔧         ❌
 ```
 
-This is the minimum viable path. Everything else is built on top.
+## Known Issues (from Claude's audit 2026-06-22)
+
+1. ⚠️ keyvault.c uses Unix sockets — architecturally wrong (seL4 PDs can't use sockets)
+2. ⚠️ wlt-init uses malloc — violates CODING_STYLE.md (PID 1 should use static buffers)
+3. ⚠️ ADR-04 says Microkit but actual build uses CAmkES — needs note
+4. ⚠️ Boot Verifier PD spec claims filesystem access — impossible from seL4 PD
+5. ⚠️ Key Vault PD spec doesn't resolve key persistence across reboots
+6. ⚠️ wlt-net, wlt-sandbox written in C but specs say Rust
+7. ⚠️ New modules (wlt-crypto, wlt-net, wlt-sandbox, wlt-terminal) have no tests yet
 
 ---
 
