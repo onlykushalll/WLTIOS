@@ -1,20 +1,7 @@
 /**
  * @file init-minimal.c
- * @brief Minimal WLTIOS init for QEMU testing (replaces Buildroot)
+ * @brief Minimal WLTIOS init for QEMU testing (v2 — fixed null bytes)
  * @module wlt-init
- * @purpose PID 1 in the WLTIOS initramfs — mounts fs, prints banner, starts shell
- *
- * This is NOT the production init (init.c). This is a minimal init for
- * QEMU integration testing. It does:
- *   1. Redirect console I/O to /dev/console
- *   2. Mount /proc, /sys, /dev
- *   3. Print "=== WLTIOS v0.1.0 ==="
- *   4. Try to start wlt-net, wlt-crypto (report STUB if they fail)
- *   5. Start wlt-shell (must succeed)
- *   6. Retry shell 5 times if it exits
- *   7. Halt if all retries fail
- *
- * Compile: gcc -m32 -static -o wlt-init-minimal init-minimal.c
  */
 
 #include <stdio.h>
@@ -44,9 +31,14 @@ static int redirect_console(void)
     return 0;
 }
 
-static int try_start_service(const char *name, const char *path)
+static void print_str(const char *s)
 {
- (void)name;
+    write(STDOUT_FILENO, s, strlen(s));
+    write(STDOUT_FILENO, "\r\n", 2);
+}
+
+static int try_exec(const char *path)
+{
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
@@ -62,94 +54,70 @@ static int try_start_service(const char *name, const char *path)
     return -1;
 }
 
-static int start_shell(void)
-{
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        char *argv[] = { "/bin/wlt-shell", NULL };
-        char *envp[] = { "PATH=/bin:/sbin:/usr/bin:/usr/sbin", "TERM=linux",
-                         "HOME=/root", "PS1=/wlt# ", NULL };
-        execve("/bin/wlt-shell", argv, envp);
-        /* If wlt-shell not found, try /bin/sh */
-        execve("/bin/sh", (char *[]){"/bin/sh", NULL}, envp);
-        _exit(127);
-    }
-    int status;
-    waitpid(pid, &status, 0);
-    if (WIFEXITED(status))
-        return WEXITSTATUS(status);
-    return -1;
-}
-
 int main(void)
 {
-    /* 1. Redirect console */
     redirect_console();
 
-    /* 2. Mount filesystems */
     mount("proc", "/proc", "proc", 0, NULL);
     mount("sysfs", "/sys", "sysfs", 0, NULL);
     mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
 
-    /* 3. Print boot banner */
-    printf("\n");
-    printf("========================================\n");
-    printf("       === WLTIOS v%s ===              \n", WLTIOS_VERSION);
-    printf("  seL4 -> Linux -> WLT-Init             \n");
-    printf("========================================\n");
-    printf("\n");
-    fflush(stdout);
+    print_str("");
+    print_str("========================================");
+    print_str("       === WLTIOS v0.1.0 ===");
+    print_str("  seL4 -> Linux -> WLT-Init");
+    print_str("========================================");
+    print_str("");
 
-    printf("[wlt-init] PID 1 starting\n");
-    printf("[wlt-init] Mounting filesystems... OK\n");
-    fflush(stdout);
+    print_str("[wlt-init] PID 1 starting");
+    print_str("[wlt-init] Mounting filesystems... OK");
 
-    /* 4. Try starting services */
-    printf("[wlt-init] Starting wlt-net... ");
-    fflush(stdout);
+    /* wlt-net */
     if (access("/sbin/wlt-net", X_OK) == 0) {
-        if (try_start_service("wlt-net", "/sbin/wlt-net") == 0)
-            printf("OK\n");
+        if (try_exec("/sbin/wlt-net") == 0)
+            print_str("[wlt-init] Starting wlt-net... OK");
         else
-            printf("STUB (network not available in QEMU)\n");
+            print_str("[wlt-init] Starting wlt-net... FAILED (exit non-zero)");
     } else {
-        printf("STUB (binary not present)\n");
+        print_str("[wlt-init] Starting wlt-net... STUB (binary not present)");
     }
-    fflush(stdout);
 
-    printf("[wlt-init] Starting wlt-crypto... ");
-    fflush(stdout);
+    /* wlt-crypto */
     if (access("/sbin/wlt-crypto", X_OK) == 0) {
-        if (try_start_service("wlt-crypto", "/sbin/wlt-crypto") == 0)
-            printf("OK\n");
+        if (try_exec("/sbin/wlt-crypto") == 0)
+            print_str("[wlt-init] Starting wlt-crypto... OK");
         else
-            printf("STUB (keyvault PD not available)\n");
+            print_str("[wlt-init] Starting wlt-crypto... FAILED (exit non-zero)");
     } else {
-        printf("STUB (binary not present)\n");
+        print_str("[wlt-init] Starting wlt-crypto... STUB (binary not present)");
     }
-    fflush(stdout);
 
-    /* 5. Start shell (with retries) */
-    printf("[wlt-init] Starting wlt-shell...\n");
-    fflush(stdout);
+    /* wlt-shell */
+    print_str("[wlt-init] Starting wlt-shell...");
 
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        int rc = start_shell();
-        if (rc == 0) {
-            printf("[wlt-init] Shell exited cleanly (attempt %d/%d)\n",
-                   attempt, MAX_RETRIES);
-        } else {
-            printf("[wlt-init] Shell exited with code %d (attempt %d/%d)\n",
-                   rc, attempt, MAX_RETRIES);
+        pid_t pid = fork();
+        if (pid == 0) {
+            char *argv[] = { "/bin/wlt-shell", NULL };
+            char *envp[] = { "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+                             "TERM=linux", "HOME=/root",
+                             "PS1=/wlt# ", NULL };
+            execve("/bin/wlt-shell", argv, envp);
+            execve("/bin/sh", (char *[]){"/bin/sh", NULL}, envp);
+            _exit(127);
         }
-        fflush(stdout);
+        int status;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status)) {
+            int rc = WEXITSTATUS(status);
+            if (rc == 0) {
+                /* Shell exited cleanly — retry */
+            }
+        }
         sleep(RETRY_DELAY);
     }
 
-    /* 6. All retries exhausted — halt */
-    printf("[wlt-init] Shell failed %d times. Halting.\n", MAX_RETRIES);
-    fflush(stdout);
+    print_str("[wlt-init] Shell failed. Halting.");
     sync();
     reboot(LINUX_REBOOT_CMD_POWER_OFF);
     return 0;
