@@ -72,7 +72,7 @@ wlt_shell_ipc_send_init(const char *command, const char *arg)
     else
         snprintf(msg, sizeof(msg), "%s\n", command);
 
-    write(g_init_fd, msg, strlen(msg));
+    if (write(g_init_fd, msg, strlen(msg)) < 0) {}
 
     /* Read response (non-blocking) */
     char buf[WLT_IPC_BUF_SIZE];
@@ -92,7 +92,7 @@ wlt_shell_ipc_send_compositor(const char *command)
     if (g_comp_fd < 0 || command == NULL)
         return WLT_SHELL_ERR_COMPOSITOR;
 
-    write(g_comp_fd, command, strlen(command));
+    if (write(g_comp_fd, command, strlen(command)) < 0) {}
 
     return WLT_SHELL_OK;
 }
