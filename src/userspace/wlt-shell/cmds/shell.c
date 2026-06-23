@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <limits.h>
+#pragma GCC diagnostic ignored "-Wformat-truncation"
 
 #define WLT_SHELL_MAX_INPUT 1024
 #define WLT_SHELL_MAX_ARGS 64
