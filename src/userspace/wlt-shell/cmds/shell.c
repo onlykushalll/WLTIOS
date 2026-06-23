@@ -26,7 +26,7 @@
 #define WLT_SHELL_MAX_INPUT 1024
 #define WLT_SHELL_MAX_ARGS 64
 #define WLT_SHELL_MAX_PATH 4096
-#define WLT_SHELL_PROMPT "wlt# "
+#define WLT_SHELL_PROMPT "/wlt# "
 
 static char g_cwd[WLT_SHELL_MAX_PATH];
 
@@ -341,79 +341,105 @@ parse_input(char *input, char **argv, int max_args)
 int
 main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+ (void)argc;
+ (void)argv;
 
-    /* Initialize CWD */
-    if (getcwd(g_cwd, sizeof(g_cwd)) == NULL)
-        strncpy(g_cwd, "/", sizeof(g_cwd) - 1);
+ /* Disable stdio buffering — fixes null bytes in QEMU serial */
+ setvbuf(stdout, NULL, _IONBF, 0);
+ setvbuf(stderr, NULL, _IONBF, 0);
 
-    char input[WLT_SHELL_MAX_INPUT];
+ /* Initialize CWD */
+ if (getcwd(g_cwd, sizeof(g_cwd)) == NULL)
+  strncpy(g_cwd, "/", sizeof(g_cwd) - 1);
 
-    printf("WLTIOS Shell v1.0\n");
-    printf("Type 'help' for available commands.\n\n");
+ char input[WLT_SHELL_MAX_INPUT];
 
-    while (1)
-    {
-        printf("%s" WLT_SHELL_PROMPT, g_cwd);
-        fflush(stdout);
+ printf("WLTIOS Shell v1.0\n");
+ printf("Type 'help' for available commands.\n\n");
 
-        if (fgets(input, sizeof(input), stdin) == NULL)
-        {
-            printf("\n");
-            break;  /* EOF */
-        }
+ while (1)
+ {
+  if (strcmp(g_cwd, "/") == 0)
+   printf("/wlt# ");
+  else
+   printf("%s/wlt# ", g_cwd);
+  fflush(stdout);
 
-        /* Skip empty lines */
-        if (input[0] == '\n')
-            continue;
+  if (fgets(input, sizeof(input), stdin) == NULL)
+  {
+   printf("\n");
+   break;
+  }
 
-        /* Parse input */
-        char *cmd_argv[WLT_SHELL_MAX_ARGS];
-        int cmd_argc = parse_input(input, cmd_argv, WLT_SHELL_MAX_ARGS);
+  if (input[0] == '\n')
+   continue;
 
-        if (cmd_argc == 0)
-            continue;
+  char *cmd_argv[WLT_SHELL_MAX_ARGS];
+  int cmd_argc = parse_input(input, cmd_argv, WLT_SHELL_MAX_ARGS);
 
-        /* Check for exit */
-        if (strcmp(cmd_argv[0], "exit") == 0)
-            break;
+  if (cmd_argc == 0)
+   continue;
 
-        /* Check built-in commands */
-        bool found = false;
-        for (int i = 0; commands[i].name != NULL; i++)
-        {
-            if (strcmp(cmd_argv[0], commands[i].name) == 0)
-            {
-                commands[i].func(cmd_argc, cmd_argv);
-                found = true;
-                break;
-            }
-        }
+  if (strcmp(cmd_argv[0], "exit") == 0)
+   break;
 
-        /* If not built-in, try external command */
-        if (!found)
-        {
-            pid_t pid = fork();
-            if (pid == 0)
-            {
-                /* Child */
-                execvp(cmd_argv[0], cmd_argv);
-                fprintf(stderr, "%s: command not found\n", cmd_argv[0]);
-                _exit(127);
-            }
-            else if (pid > 0)
-            {
-                /* Parent */
-                int status;
-                waitpid(pid, &status, 0);
-            }
-            else
-            {
-                perror("fork");
-            }
-        }
+  /* Check for output redirection */
+  int saved_stdout = -1;
+  for (int ri = 0; ri < cmd_argc; ri++) {
+   if (cmd_argv[ri] && (strcmp(cmd_argv[ri], ">") == 0 || strcmp(cmd_argv[ri], ">>") == 0)) {
+    if (ri + 1 < cmd_argc) {
+     int append = (cmd_argv[ri][1] == '>');
+     int fd = open(cmd_argv[ri + 1], O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0644);
+     if (fd >= 0) {
+      saved_stdout = dup(STDOUT_FILENO);
+      dup2(fd, STDOUT_FILENO);
+      close(fd);
+      cmd_argv[ri] = NULL;
+      cmd_argc = ri;
+     }
     }
+   }
+  }
 
-    return 0;
+  /* Check built-in commands */
+  bool found = false;
+  for (int i = 0; commands[i].name != NULL; i++)
+  {
+   if (strcmp(cmd_argv[0], commands[i].name) == 0)
+   {
+    commands[i].func(cmd_argc, cmd_argv);
+    found = true;
+    break;
+   }
+  }
+
+  /* If not built-in, try external command */
+  if (!found)
+  {
+   pid_t pid = fork();
+   if (pid == 0)
+   {
+    execvp(cmd_argv[0], cmd_argv);
+    fprintf(stderr, "%s: command not found\n", cmd_argv[0]);
+    _exit(127);
+   }
+   else if (pid > 0)
+   {
+    int status;
+    waitpid(pid, &status, 0);
+   }
+   else
+   {
+    perror("fork");
+   }
+  }
+
+  /* Restore stdout if redirected */
+  if (saved_stdout >= 0) {
+   dup2(saved_stdout, STDOUT_FILENO);
+   close(saved_stdout);
+  }
+ }
+
+ return 0;
 }
