@@ -33,7 +33,14 @@ static int redirect_console(void)
 
 static void print_str(const char *s)
 {
-    write(STDOUT_FILENO, s, strlen(s));
+    /* Write each character individually to avoid null-byte truncation */
+    while (*s) {
+        if (*s != '\0') {
+            char c = *s;
+            write(STDOUT_FILENO, &c, 1);
+        }
+        s++;
+    }
     write(STDOUT_FILENO, "\r\n", 2);
 }
 

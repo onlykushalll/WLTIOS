@@ -50,7 +50,10 @@ cmd_ls(int argc, char **argv)
         }
     }
 
-    DIR *d = opendir(g_cwd);
+    const char *path = g_cwd;
+    if (argc > 1 && argv[1][0] != '-')
+        path = argv[1];
+    DIR *d = opendir(path);
     if (d == NULL)
     {
         perror("ls");
@@ -66,7 +69,7 @@ cmd_ls(int argc, char **argv)
         if (long_format)
         {
             char full_path[WLT_SHELL_MAX_PATH];
-            snprintf(full_path, sizeof(full_path), "%s/%s", g_cwd, entry->d_name);
+            snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name);
             struct stat st;
             if (stat(full_path, &st) == 0)
             {
