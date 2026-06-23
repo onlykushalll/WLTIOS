@@ -354,8 +354,8 @@ main(int argc, char **argv)
 
  char input[WLT_SHELL_MAX_INPUT];
 
- printf("WLTIOS Shell v1.0\n");
- printf("Type 'help' for available commands.\n\n");
+ write(1, "WLTIOS Shell v1.0\r\n", sizeof("WLTIOS Shell v1.0\r\n") - 1);
+ write(1, "Type 'help' for available commands.\r\n\r\n", sizeof("Type 'help' for available commands.\r\n\r\n") - 1);
 
  while (1)
  {
