@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <linux/fb.h>
+#include <sched.h>
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 
 #define WLT_SHELL_MAX_INPUT 1024
@@ -1123,6 +1124,84 @@ cmd_killswitch(int argc, char **argv)
     }
 }
 
+/* ─── Sandbox command (Section C.4) ─────────────────── */
+
+/**
+ * sandbox — run a command in an isolated network namespace.
+ *
+ * Uses unshare(CLONE_NEWNET) to give the child process its own network
+ * stack with no interfaces (except lo). The child cannot reach eth0,
+ * the default route, or any external network — proving network isolation.
+ *
+ * This is the simplest sandbox proof: the sandboxed process has no
+ * network access at all. A real sandbox would also use CLONE_NEWPID,
+ * CLONE_NEWNS, cgroups, and seccomp (see wlt-sandbox/sandbox.c for
+ * the full implementation — this shell command is a quick demo).
+ */
+static int
+cmd_sandbox(int argc, char **argv)
+{
+    if (argc < 2)
+    {
+        printf("Usage: sandbox <command> [args...]\n");
+        printf("Runs the command in an isolated network namespace.\n");
+        printf("The sandboxed process has no network access (no eth0, no route).\n");
+        printf("Example: sandbox netcheck  (should show no default route)\n");
+        return 1;
+    }
+
+    printf("=== Sandboxing: %s ===\n", argv[1]);
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        fprintf(stderr, "sandbox: fork failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    if (pid == 0)
+    {
+        /* Child: unshare network namespace, then exec the command.
+         * CLONE_NEWNET gives us a new network stack with only lo (down).
+         * The child cannot see eth0 or the default route. */
+        if (unshare(CLONE_NEWNET) != 0)
+        {
+            fprintf(stderr, "sandbox: unshare(CLONE_NEWNET) failed: %s\n",
+                    strerror(errno));
+            fprintf(stderr, "sandbox: (kernel may not support namespaces)\n");
+            _exit(1);
+        }
+
+        /* Bring up lo in the new namespace so localhost works */
+        int sock = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sock >= 0)
+        {
+            struct ifreq ifr;
+            memset(&ifr, 0, sizeof(ifr));
+            strncpy(ifr.ifr_name, "lo", IFNAMSIZ - 1);
+            ifr.ifr_flags = IFF_UP | IFF_RUNNING;
+            ioctl(sock, SIOCSIFFLAGS, &ifr);
+            close(sock);
+        }
+
+        /* Exec the command */
+        execvp(argv[1], &argv[1]);
+        fprintf(stderr, "sandbox: exec %s failed: %s\n", argv[1], strerror(errno));
+        _exit(127);
+    }
+
+    /* Parent: wait for child */
+    int status;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status))
+    {
+        printf("=== Sandbox exited (code %d) ===\n", WEXITSTATUS(status));
+        return WEXITSTATUS(status);
+    }
+    printf("=== Sandbox terminated abnormally ===\n");
+    return 1;
+}
+
 static int
 cmd_help(int argc, char **argv)
 {
@@ -1143,6 +1222,7 @@ cmd_help(int argc, char **argv)
     printf("  killswitch on  Block all non-Tor traffic (OUTPUT DROP)\n");
     printf("  killswitch off Allow all traffic (OUTPUT ACCEPT)\n");
     printf("  killswitch status Show current iptables rules\n");
+    printf("  sandbox <cmd>   Run command in isolated network namespace\n");
     printf("  help            Show this help\n");
     printf("  exit            Exit shell\n");
     return 0;
@@ -1168,6 +1248,7 @@ static wlt_shell_command_t commands[] = {
     {"tstatus",  cmd_tstatus},
     {"draw",     cmd_draw},
     {"killswitch", cmd_killswitch},
+    {"sandbox",  cmd_sandbox},
     {"help",     cmd_help},
     {NULL, NULL},
 };
