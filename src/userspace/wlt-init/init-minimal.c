@@ -79,13 +79,19 @@ static int try_exec(const char *path)
  */
 static pid_t start_tor_background(void)
 {
-    /* Tor is a musl-linked binary needing /lib/ld-musl-i386.so.1 as interpreter.
-     * We exec the loader directly with --library-path /lib and pass tor as arg.
-     * This avoids needing /bin/sh (which isn't in the minimal initramfs). */
-    const char *loader = "/lib/ld-musl-i386.so.1";
+    /* Tor is a musl-linked binary. The loader path differs by architecture:
+     *   i386:   /lib/ld-musl-i386.so.1
+     *   x86_64: /lib/ld-musl-x86_64.so.1
+     * We detect which one exists and use it. */
+    const char *loader = NULL;
+    if (access("/lib/ld-musl-x86_64.so.1", X_OK) == 0)
+        loader = "/lib/ld-musl-x86_64.so.1";
+    else if (access("/lib/ld-musl-i386.so.1", X_OK) == 0)
+        loader = "/lib/ld-musl-i386.so.1";
+
     const char *tor_bin = "/usr/bin/tor";
 
-    if (access(loader, X_OK) != 0)
+    if (loader == NULL)
     {
         print_str("[wlt-init] ld-musl loader not found — skipping Tor");
         return -1;
@@ -270,6 +276,43 @@ int main(void)
         print_str("[wlt-init] Network-only mode. Use 'netcheck' to verify.");
     }
 
+    /* Compositor — start in background if binary exists */
+    if (access("/usr/bin/wlt-compositor", X_OK) == 0)
+    {
+        print_str("[wlt-init] Starting compositor...");
+        pid_t comp_pid = fork();
+        if (comp_pid == 0)
+        {
+            /* Child: set env vars for compositor */
+            setenv("WLR_BACKENDS", "headless", 1);
+            setenv("WLR_RENDERER", "pixman", 1);
+            setenv("WAYLAND_DISPLAY", "wayland-0", 1);
+            setenv("XDG_RUNTIME_DIR", "/run", 1);
+            char *argv[] = { "/usr/bin/wlt-compositor", NULL };
+            char *envp[] = {
+                "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+                "TERM=linux",
+                "HOME=/root",
+                "WLR_BACKENDS=headless",
+                "WLR_RENDERER=pixman",
+                "WAYLAND_DISPLAY=wayland-0",
+                "XDG_RUNTIME_DIR=/run",
+                NULL
+            };
+            execve("/usr/bin/wlt-compositor", argv, envp);
+            write(1, "[wlt-init] Compositor exec failed\r\n", 35);
+            _exit(1);
+        }
+        else if (comp_pid > 0)
+        {
+            char msg[64];
+            int n = snprintf(msg, sizeof(msg),
+                "[wlt-init] Compositor started (pid=%d)\r\n", (int)comp_pid);
+            write(1, msg, n > 0 ? n : 0);
+            sleep(3);  /* Give compositor time to create socket */
+        }
+    }
+
     /* wlt-shell */
     print_str("[wlt-init] Starting wlt-shell...");
 
@@ -279,7 +322,10 @@ int main(void)
             char *argv[] = { "/bin/wlt-shell", NULL };
             char *envp[] = { "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
                              "TERM=linux", "HOME=/root",
-                             "PS1=/wlt# ", NULL };
+                             "PS1=/wlt# ",
+                             "WAYLAND_DISPLAY=wayland-0",
+                             "XDG_RUNTIME_DIR=/run",
+                             NULL };
             execve("/bin/wlt-shell", argv, envp);
             execve("/bin/sh", (char *[]){"/bin/sh", NULL}, envp);
             _exit(127);
