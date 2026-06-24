@@ -1,7 +1,12 @@
 /**
  * @file init-minimal.c
- * @brief Minimal WLTIOS init for QEMU testing (v2 — fixed null bytes)
+ * @brief Minimal WLTIOS init for QEMU testing (v3 — network + Tor)
  * @module wlt-init
+ *
+ * v3 changes:
+ *   - wlt-net now does REAL network bringup (qemu_bringup.c)
+ *   - Tor is started in background if /usr/bin/tor exists
+ *   - Logs every step to serial for verification
  */
 
 #include <stdio.h>
@@ -61,6 +66,66 @@ static int try_exec(const char *path)
     return -1;
 }
 
+/**
+ * Start Tor in background. Returns PID (>0) on success, -1 on failure.
+ * Tor's stderr goes to serial console so we can see bootstrap progress.
+ */
+static pid_t start_tor_background(void)
+{
+    /* Tor is a musl-linked binary needing /lib/ld-musl-i386.so.1 as interpreter.
+     * We exec the loader directly with --library-path /lib and pass tor as arg.
+     * This avoids needing /bin/sh (which isn't in the minimal initramfs). */
+    const char *loader = "/lib/ld-musl-i386.so.1";
+    const char *tor_bin = "/usr/bin/tor";
+
+    if (access(loader, X_OK) != 0)
+    {
+        print_str("[wlt-init] ld-musl loader not found — skipping Tor");
+        return -1;
+    }
+    if (access(tor_bin, X_OK) != 0)
+    {
+        print_str("[wlt-init] Tor binary not found — skipping Tor startup");
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        print_str("[wlt-init] fork() for Tor failed");
+        return -1;
+    }
+    if (pid == 0)
+    {
+        /* Child: exec ld-musl loader, which loads tor */
+        char *argv[] = { (char *)loader, "--library-path", "/lib",
+                         (char *)tor_bin, "-f", "/etc/tor/torrc", NULL };
+        char *envp[] = { "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+                         "TERM=linux",
+                         "HOME=/var/lib/tor",
+                         NULL };
+        execve(loader, argv, envp);
+        /* If exec fails, write error and exit */
+        char msg[128];
+        int n = snprintf(msg, sizeof(msg),
+                         "[wlt-init] Tor exec failed: %s\r\n",
+                         strerror(errno));
+        write(2, msg, n > 0 ? n : 0);
+        _exit(127);
+    }
+
+    /* Parent */
+    {
+        char msg[64];
+        int n = snprintf(msg, sizeof(msg),
+                         "[wlt-init] Tor started (pid=%d), waiting for bootstrap...",
+                         (int)pid);
+        write(1, msg, n > 0 ? n : 0);
+        write(1, "\r\n", 2);
+    }
+    return pid;
+}
+
 int main(void)
 {
     redirect_console();
@@ -68,21 +133,23 @@ int main(void)
     mount("proc", "/proc", "proc", 0, NULL);
     mount("sysfs", "/sys", "sysfs", 0, NULL);
     mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
+    mount("tmpfs", "/tmp", "tmpfs", 0, NULL);
+    mount("tmpfs", "/run", "tmpfs", 0, NULL);
 
     print_str("");
     print_str("========================================");
     print_str("       === WLTIOS v0.1.0 ===");
-    print_str("  seL4 -> Linux -> WLT-Init");
+    print_str("  seL4 -> Linux -> WLT-Init (v3)");
     print_str("========================================");
     print_str("");
 
     print_str("[wlt-init] PID 1 starting");
     print_str("[wlt-init] Mounting filesystems... OK");
 
-    /* wlt-net */
+    /* wlt-net — REAL network bringup */
     if (access("/sbin/wlt-net", X_OK) == 0) {
         if (try_exec("/sbin/wlt-net") == 0)
-            print_str("[wlt-init] Starting wlt-net... OK");
+            print_str("[wlt-init] Starting wlt-net... OK (network up)");
         else
             print_str("[wlt-init] Starting wlt-net... FAILED (exit non-zero)");
     } else {
@@ -95,6 +162,24 @@ int main(void)
         print_str("[wlt-init] Starting wlt-crypto... OK (see service output above)");
     } else {
         print_str("[wlt-init] Starting wlt-crypto... STUB (binary not present)");
+    }
+
+    /* Tor — start in background BEFORE shell */
+    print_str("[wlt-init] Starting Tor...");
+    pid_t tor_pid = start_tor_background();
+    if (tor_pid > 0)
+    {
+        /* Give Tor up to 30 seconds to bootstrap. During this time
+         * Tor's stderr (bootstrap progress) appears on serial.
+         * We don't block the shell forever — just give it a head start. */
+        sleep(15);
+        print_str("[wlt-init] Tor head-start complete (15s). Shell starting.");
+        print_str("[wlt-init] Run 'tstatus' to check Tor, 'torcheck' to verify.");
+    }
+    else
+    {
+        print_str("[wlt-init] Tor not started (binary missing).");
+        print_str("[wlt-init] Network-only mode. Use 'netcheck' to verify.");
     }
 
     /* wlt-shell */
