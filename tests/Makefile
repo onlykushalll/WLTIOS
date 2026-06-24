@@ -38,7 +38,22 @@ test:
 	@echo "--- Process Monitor ---"
 	@$(CC) $(CFLAGS) $(INIT_INC) -o $(OUT)-mon tests/userspace/monitor_test.c src/userspace/wlt-init/monitor.c src/userspace/wlt-init/service.c src/userspace/wlt-init/dependency.c src/userspace/wlt-init/log.c src/userspace/wlt-init/tor.c && $(OUT)-mon || echo "FAIL"
 	@echo ""
+	@echo "--- Framebuffer + Bitmap Font ---"
+	@$(CC) $(CFLAGS) -o $(OUT)-fb tests/userspace/framebuffer_test.c && $(OUT)-fb || echo "FAIL"
+	@echo ""
+	@echo "--- Kill Switch ---"
+	@$(CC) $(CFLAGS) -o $(OUT)-ks tests/userspace/kill_switch_test.c && $(OUT)-ks || echo "FAIL"
+	@echo ""
+	@echo "--- Amnesic Mode ---"
+	@$(CC) $(CFLAGS) -o $(OUT)-amn tests/userspace/amnesic_test.c && $(OUT)-amn || echo "FAIL"
+	@echo ""
+	@echo "--- MAC Randomization ---"
+	@$(CC) $(CFLAGS) -o $(OUT)-mac tests/userspace/mac_randomize_test.c && $(OUT)-mac || echo "FAIL"
+	@echo ""
+	@echo "--- Sandbox ---"
+	@$(CC) $(CFLAGS) -o $(OUT)-sb tests/userspace/sandbox_test.c && $(OUT)-sb || echo "FAIL"
+	@echo ""
 	@echo "=== All Tests Complete ==="
 
 clean:
-	rm -f $(OUT)-sha $(OUT)-cfg $(OUT)-svc $(OUT)-dep $(OUT)-mon
+	rm -f $(OUT)-sha $(OUT)-cfg $(OUT)-svc $(OUT)-dep $(OUT)-mon $(OUT)-fb $(OUT)-ks $(OUT)-amn $(OUT)-mac $(OUT)-sb
