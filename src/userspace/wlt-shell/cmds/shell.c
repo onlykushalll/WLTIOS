@@ -1014,6 +1014,115 @@ cmd_draw(int argc, char **argv)
     return 0;
 }
 
+/* ─── Kill switch command (Section C.1) ─────────────── */
+
+/**
+ * killswitch — block all non-Tor traffic via iptables.
+ *
+ * on:  OUTPUT policy DROP + allow localhost (Tor SOCKS) + allow QEMU gateway
+ * off: flush all rules + OUTPUT policy ACCEPT
+ * status: show current iptables rules
+ *
+ * iptables is a musl-linked binary, so we exec it via ld-musl loader.
+ */
+static int
+cmd_killswitch(int argc, char **argv)
+{
+    if (argc < 2)
+    {
+        printf("Usage: killswitch <on|off|status>\n");
+        printf("  on     - Block all non-Tor traffic (OUTPUT DROP + exceptions)\n");
+        printf("  off    - Allow all traffic (OUTPUT ACCEPT)\n");
+        printf("  status - Show current iptables rules\n");
+        return 1;
+    }
+
+    const char *LOADER = "/lib/ld-musl-i386.so.1";
+    const char *IPTABLES = "/usr/sbin/iptables";
+
+    if (access(LOADER, X_OK) != 0 || access(IPTABLES, X_OK) != 0)
+    {
+        fprintf(stderr, "killswitch: iptables or ld-musl not found\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "on") == 0)
+    {
+        printf("=== Activating Kill Switch ===\n");
+
+        /* Helper to run an iptables command */
+        struct ipt_cmd {
+            const char *args[12];
+        };
+        struct ipt_cmd cmds[] = {
+            { { LOADER, "--library-path", "/lib", IPTABLES, "-F", NULL } },
+            { { LOADER, "--library-path", "/lib", IPTABLES, "-P", "OUTPUT", "DROP", NULL } },
+            { { LOADER, "--library-path", "/lib", IPTABLES, "-A", "OUTPUT", "-d", "127.0.0.1", "-j", "ACCEPT", NULL } },
+            { { LOADER, "--library-path", "/lib", IPTABLES, "-A", "OUTPUT", "-d", "10.0.2.2", "-j", "ACCEPT", NULL } },
+        };
+
+        for (int i = 0; i < 4; i++)
+        {
+            pid_t pid = fork();
+            if (pid == 0)
+            {
+                execv(LOADER, (char **)cmds[i].args);
+                _exit(127);
+            }
+            int status;
+            waitpid(pid, &status, 0);
+            if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+            {
+                printf("  rule %d: exit code %d\n", i, WEXITSTATUS(status));
+            }
+        }
+
+        printf("  OUTPUT policy: DROP\n");
+        printf("  Allowed: 127.0.0.1 (Tor SOCKS), 10.0.2.2 (QEMU gateway)\n");
+        printf("=== Kill Switch ACTIVE — all non-Tor traffic blocked ===\n");
+        return 0;
+    }
+    else if (strcmp(argv[1], "off") == 0)
+    {
+        printf("=== Deactivating Kill Switch ===\n");
+
+        char *args1[] = { (char *)LOADER, "--library-path", "/lib",
+                          (char *)IPTABLES, "-F", NULL };
+        char *args2[] = { (char *)LOADER, "--library-path", "/lib",
+                          (char *)IPTABLES, "-P", "OUTPUT", "ACCEPT", NULL };
+
+        pid_t pid;
+        pid = fork();
+        if (pid == 0) { execv(LOADER, args1); _exit(127); }
+        int status; waitpid(pid, &status, 0);
+
+        pid = fork();
+        if (pid == 0) { execv(LOADER, args2); _exit(127); }
+        waitpid(pid, &status, 0);
+
+        printf("  OUTPUT policy: ACCEPT\n");
+        printf("=== Kill Switch OFF — all traffic allowed ===\n");
+        return 0;
+    }
+    else if (strcmp(argv[1], "status") == 0)
+    {
+        printf("=== Current iptables rules ===\n");
+        char *args[] = { (char *)LOADER, "--library-path", "/lib",
+                         (char *)IPTABLES, "-L", "-n", NULL };
+        pid_t pid = fork();
+        if (pid == 0) { execv(LOADER, args); _exit(127); }
+        int status;
+        waitpid(pid, &status, 0);
+        printf("=== End rules ===\n");
+        return 0;
+    }
+    else
+    {
+        fprintf(stderr, "killswitch: unknown argument '%s' (use on/off/status)\n", argv[1]);
+        return 1;
+    }
+}
+
 static int
 cmd_help(int argc, char **argv)
 {
@@ -1031,6 +1140,9 @@ cmd_help(int argc, char **argv)
     printf("  torcheck        Verify Tor routes traffic (via check.torproject.org)\n");
     printf("  tstatus         Show Tor process and port status\n");
     printf("  draw            Draw to framebuffer (navy bg + cyan rect + WLTIOS)\n");
+    printf("  killswitch on  Block all non-Tor traffic (OUTPUT DROP)\n");
+    printf("  killswitch off Allow all traffic (OUTPUT ACCEPT)\n");
+    printf("  killswitch status Show current iptables rules\n");
     printf("  help            Show this help\n");
     printf("  exit            Exit shell\n");
     return 0;
@@ -1055,6 +1167,7 @@ static wlt_shell_command_t commands[] = {
     {"torcheck", cmd_torcheck},
     {"tstatus",  cmd_tstatus},
     {"draw",     cmd_draw},
+    {"killswitch", cmd_killswitch},
     {"help",     cmd_help},
     {NULL, NULL},
 };

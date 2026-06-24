@@ -33,6 +33,7 @@
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
+#include <net/if_arp.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <linux/route.h>
@@ -264,6 +265,46 @@ wlt_net_qemu_bringup(void)
         int n = snprintf(msg, sizeof(msg),
                          "[wlt-net] Using interface: %s\r\n", iface);
         write(1, msg, n > 0 ? n : 0);
+    }
+
+    /* Step 1b: Randomize MAC address for privacy (amnesic identity).
+     * This generates a new locally-administered unicast MAC on every boot,
+     * so the device cannot be tracked by hardware MAC across sessions. */
+    {
+        int rfd = open("/dev/urandom", O_RDONLY);
+        if (rfd >= 0)
+        {
+            uint8_t mac[6];
+            if (read(rfd, mac, 6) == 6)
+            {
+                /* Set locally administered (bit 1) + unicast (bit 0 clear) */
+                mac[0] = (mac[0] & 0xFE) | 0x02;
+
+                int msock = socket(AF_INET, SOCK_DGRAM, 0);
+                if (msock >= 0)
+                {
+                    struct ifreq ifr;
+                    memset(&ifr, 0, sizeof(ifr));
+                    strncpy(ifr.ifr_name, iface, IFNAMSIZ - 1);
+                    memcpy(ifr.ifr_hwaddr.sa_data, mac, 6);
+                    ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
+                    if (ioctl(msock, SIOCSIFHWADDR, &ifr) == 0)
+                    {
+                        char msg[100];
+                        int n = snprintf(msg, sizeof(msg),
+                            "[wlt-net] MAC randomized: %02x:%02x:%02x:%02x:%02x:%02x\r\n",
+                            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                        write(1, msg, n > 0 ? n : 0);
+                    }
+                    else
+                    {
+                        write(1, "[wlt-net] MAC randomize: ioctl failed (non-fatal)\r\n", 50);
+                    }
+                    close(msock);
+                }
+            }
+            close(rfd);
+        }
     }
 
     /* Step 2: open the ioctl socket */

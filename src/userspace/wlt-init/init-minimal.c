@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/mount.h>
+#include <sys/stat.h>
 #include <sys/reboot.h>
 #include <linux/reboot.h>
 #include <linux/fb.h>
@@ -136,21 +137,38 @@ int main(void)
 {
     redirect_console();
 
+    /* Core kernel filesystems */
     mount("proc", "/proc", "proc", 0, NULL);
     mount("sysfs", "/sys", "sysfs", 0, NULL);
     mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
-    mount("tmpfs", "/tmp", "tmpfs", 0, NULL);
-    mount("tmpfs", "/run", "tmpfs", 0, NULL);
+
+    /* Amnesic mode: all writable directories are tmpfs (RAM only).
+     * Nothing persists across reboots. This is the Tails-inspired
+     * amnesic guarantee — power off = all data gone. */
+    mount("tmpfs", "/tmp", "tmpfs", 0, "size=64m");
+    mount("tmpfs", "/var", "tmpfs", 0, "size=32m");
+    mount("tmpfs", "/run", "tmpfs", 0, "mode=0755");
+    mount("tmpfs", "/home", "tmpfs", 0, "size=256m");
+
+    /* Since /var is now tmpfs (empty), recreate required directories */
+    mkdir("/var/lib", 0755);
+    mkdir("/var/lib/tor", 0700);
+    mkdir("/var/log", 0755);
+    mkdir("/var/log/wlt", 0755);
+
+    /* /run/wayland-0 will be created by the compositor */
+    mkdir("/run", 0755);
 
     print_str("");
     print_str("========================================");
     print_str("       === WLTIOS v0.1.0 ===");
-    print_str("  seL4 -> Linux -> WLT-Init (v4)");
+    print_str("  seL4 -> Linux -> WLT-Init (v5)");
     print_str("========================================");
     print_str("");
 
     print_str("[wlt-init] PID 1 starting");
     print_str("[wlt-init] Mounting filesystems... OK");
+    print_str("[wlt-init] Amnesic mode: all writes in RAM (tmpfs)");
 
     /* Framebuffer init — set /dev/fb0 to 1366x768x32 for QEMU -vga std.
      * This must happen before any rendering commands (draw, compositor). */
