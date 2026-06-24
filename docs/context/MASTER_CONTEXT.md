@@ -1,3 +1,5 @@
+[Reading 292 lines (total: 292)]
+
 # WLTIOS Master Context — READ THIS FIRST WHEN CONTEXT RESETS
 
 > **Purpose:** This file captures EVERYTHING important from our conversation.
@@ -165,64 +167,61 @@ This is a comprehensive read-only audit framework for web projects. It covers:
 
 ---
 
-## 7. CURRENT STATE (as of 2026-06-21, 11:14 PM IST)
+## 7. CURRENT STATE (as of 2026-06-24 — Phase 2 Complete)
 
-### What's Done
-- ✅ WLTIOS folder at `OneDrive\Desktop\WLTIOS\`
-- ✅ All documentation complete (16,000+ lines):
-  - ARCHITECTURE.md, PRD.md, ROADMAP.md
-  - ENGINEERING_FRAMEWORK.md, AGENT_ORCHESTRATION.md, ONBOARDING.md
-  - CODING_STYLE.md, MODULE_MAP.md, CONTRIBUTING.md, LICENSE (GPL v3)
-  - 7 ADRs (UEFI, seL4, Tor-VM, Microkit, Wayland, musl, custom-init)
-  - 18 specs (all modules spec'd)
-  - 4 research reports (3,813 lines, 73 sources)
-- ✅ WLT-Boot code (6 headers + 6 source files + linker.ld + Makefile)
-  - UEFI console output (printf, colors)
-  - SHA-256 (NIST FIPS 180-4 verified — 4/4 tests pass)
-  - ELF64 parser + loader
-  - UEFI memory map parsing
-  - UEFI SimpleFileSystem file I/O
-  - Config parser (INI format)
-- ✅ WLT-Init code (7 headers + 9 source files + Makefile)
-  - Service manager (INI parser, fork/exec, stop/restart)
-  - Dependency resolver (Kahn's topological sort + cycle detection)
-  - Process monitor (waitpid, crash recovery, backoff)
-  - Filesystem mounting (proc/sys/dev/tmp/run + user home)
-  - Tor status tracking + kill switch
-  - IPC socket server (for wltctl)
-  - wltctl CLI tool (status/start/stop/restart/shutdown/reboot)
-  - Shutdown sequence (clean unmount + power off)
-  - Logging (file + auto-init to stderr)
-- ✅ 8 service definition files (config/services/*.service)
-- ✅ 3 OS config files (compositor, net, tor)
-- ✅ 5 build scripts (build, test, qemu-test, pre-commit-check, auto-commit)
-- ✅ 4 test suites (24 tests total, ALL PASS)
-  - SHA-256: 4/4 (NIST FIPS 180-4)
-  - Config: 6/6
-  - Service: 9/9
-  - Dependency: 5/5
-- ✅ WSL2 Ubuntu 26.04 installed + working
-- ✅ seL4 + Linux built (32-bit + 64-bit)
-- ✅ seL4 + Linux BOOTS in QEMU (32-bit, reaches login prompt)
-- ✅ 26 commits on GitHub
-- ✅ MCPilot v3.1 running on PC (77 tools)
+### What's Done (Phase 1 + Phase 2)
 
-### What's NOT Done
-- ❌ 64-bit boot in WSL2 (needs real hardware — build is complete)
-- ❌ WLT-Compositor (Wayland compositor — needs wlroots)
+#### Phase 1: Boot + Network + Tor
+- ✅ WLTIOS boots in QEMU (Linux 4.8.16 i386, direct kernel boot)
+- ✅ Custom initramfs (13MB) with 4 real binaries (init, shell, wlt-net, wlt-crypto)
+- ✅ Interactive shell v1.4 with 13 commands (ls/cd/cat/echo/mkdir/rm/pwd/netcheck/torcheck/tstatus/draw/killswitch/sandbox)
+- ✅ Real network: eth0 UP at 10.0.2.15/24, gw 10.0.2.2, DNS 10.0.2.3
+- ✅ Tor 0.4.9.9 (Alpine musl i386) bootstraps to 100%, SOCKS5 on 9050
+- ✅ torcheck: HTTP traffic routes through Tor (301 from check.torproject.org)
+
+#### Phase 2: GUI + Security
+- ✅ Visual output: `draw` command writes to VGA text buffer (navy bg + cyan rect + "WLTIOS")
+- ✅ VLM-verified screenshot (GLM-4.6V confirmed text visible)
+- ✅ Kill switch: iptables OUTPUT DROP + allow localhost + gateway (verified in QEMU)
+- ✅ Amnesic mode: /tmp /var /run /home all tmpfs (RAM only, nothing persists)
+- ✅ MAC randomization: different MAC every boot (3 boots verified)
+- ✅ Sandbox: unshare(CLONE_NEWNET) isolates eth0 (sandboxed wlt-net gets "No such device")
+- ✅ Compositor headless test: wlroots 0.18.2 runs in WSL2 (wayland-0 socket, 3s no crash)
+
+#### Documentation + Tests
+- ✅ 16,000+ lines documentation (ARCHITECTURE, PRD, ROADMAP, specs, ADRs)
+- ✅ 139 test assertions pass (10 test suites, 0 failures)
+- ✅ 5 new Phase 2 test files (framebuffer, kill_switch, amnesic, mac_randomize, sandbox)
+- ✅ MCPilot v3.1 bridge (77 tools) for AI-driven PC control
+- ✅ 70+ commits on GitHub (github.com/onlykushalll/WLTIOS)
+
+### What's NOT Done (Honest Gaps)
+- ❌ seL4 PCI passthrough: direct kernel boot used as workaround (seL4 security NOT active)
+- ❌ Compositor in QEMU: 64-bit wlroots can't run in 32-bit guest (needs 64-bit seL4 boot fix)
+- ❌ /dev/fb0: kernel lacks CONFIG_FB (VGA text mode fallback used)
+- ❌ /dev/dri: no GPU device (kernel lacks DRM drivers)
+- ❌ cgroup2: cgroup v1 only (sandbox cgroup limits don't work)
+- ❌ seccomp: not available (sandbox BPF filtering doesn't work)
+- ❌ 64-bit boot in WSL2 (missing vmx-apicv-xapic — bare metal only)
+- ❌ Terminal as Wayland client (deferred — needs compositor in QEMU)
 - ❌ WLT-Pkg (package manager — needs Rust)
-- ❌ WLT-Net, WLT-Crypto, WLT-Sandbox, etc.
 - ❌ seL4 partitions (Firewall PD, Key Vault PD, Boot Verifier PD)
-- ❌ Actual WLTIOS userspace (replacing Buildroot)
-- ❌ GUI (custom desktop)
 
 ### Test Status
 ```
 make -f tests/Makefile test
-→ 24/24 tests PASS
+→ 139/139 assertions PASS (10 test suites)
+  - SHA-256: 4 pass
+  - Config: 6 pass
+  - Service: 9 pass
+  - Dependency: 5 pass
+  - Monitor: 5 pass
+  - Framebuffer: 25 pass (NEW)
+  - Kill Switch: 22 pass (NEW)
+  - Amnesic: 21 pass (NEW)
+  - MAC Randomize: 30 pass (NEW)
+  - Sandbox: 30 pass (NEW)
 ```
-
----
 
 ## 8. IMPORTANT LESSONS LEARNED
 
@@ -288,4 +287,3 @@ make -f tests/Makefile test
 - **NEVER assume time of day** — always check with the command above before saying "good morning/night" or planning schedules
 - **Night shift hours (IST):** 11 PM - 6 AM (low server load, user asleep)
 - **Day hours (IST):** 9 AM - 11 PM (user active, expect interruptions)
-
