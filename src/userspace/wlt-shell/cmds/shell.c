@@ -18,6 +18,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/if.h>
@@ -27,6 +28,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <limits.h>
+#include <linux/fb.h>
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 
 #define WLT_SHELL_MAX_INPUT 1024
@@ -736,6 +738,282 @@ cmd_tstatus(int argc, char **argv)
     return 0;
 }
 
+/* ─── Framebuffer draw command (Stage 2 — GUI) ──────── */
+
+/*
+ * Minimal 7x9 bitmap font for "WLTIOS".
+ * Each letter is 9 rows, each row's lower 7 bits = pixel on/off.
+ * Bit 6 (0x40) = leftmost pixel, bit 0 (0x01) = rightmost.
+ */
+
+/* W: wide W shape */
+static const uint8_t FONT_W[9] = {
+    0x41, /* 1.....1 */
+    0x41, /* 1.....1 */
+    0x41, /* 1.....1 */
+    0x55, /* 1.1.1.1 */
+    0x55, /* 1.1.1.1 */
+    0x55, /* 1.1.1.1 */
+    0x55, /* 1.1.1.1 */
+    0x22, /* .1...1. */
+    0x41, /* 1.....1 */
+};
+
+/* L: L shape */
+static const uint8_t FONT_L[9] = {
+    0x40, /* 1...... */
+    0x40, /* 1...... */
+    0x40, /* 1...... */
+    0x40, /* 1...... */
+    0x40, /* 1...... */
+    0x40, /* 1...... */
+    0x40, /* 1...... */
+    0x40, /* 1...... */
+    0x7F, /* 1111111 */
+};
+
+/* T: T shape */
+static const uint8_t FONT_T[9] = {
+    0x7F, /* 1111111 */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+};
+
+/* I: I with serifs */
+static const uint8_t FONT_I[9] = {
+    0x7F, /* 1111111 */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x08, /* ...1... */
+    0x7F, /* 1111111 */
+};
+
+/* O: oval */
+static const uint8_t FONT_O[9] = {
+    0x3E, /* .11111. */
+    0x41, /* 1.....1 */
+    0x41, /* 1.....1 */
+    0x41, /* 1.....1 */
+    0x41, /* 1.....1 */
+    0x41, /* 1.....1 */
+    0x41, /* 1.....1 */
+    0x41, /* 1.....1 */
+    0x3E, /* .11111. */
+};
+
+/* S: S shape */
+static const uint8_t FONT_S[9] = {
+    0x3E, /* .11111. */
+    0x41, /* 1.....1 */
+    0x40, /* 1...... */
+    0x40, /* 1...... */
+    0x3E, /* .11111. */
+    0x01, /* ......1 */
+    0x01, /* ......1 */
+    0x41, /* 1.....1 */
+    0x3E, /* .11111. */
+};
+
+/**
+ * draw — render to /dev/fb0 directly, or fall back to VGA text mode.
+ *
+ * If /dev/fb0 exists (kernel has framebuffer support):
+ *   - Fills the screen with navy blue
+ *   - Draws a cyan rectangle in the center
+ *   - Writes "WLTIOS" in white pixels using the bitmap font
+ *
+ * If /dev/fb0 doesn't exist but /dev/mem does (VGA text mode fallback):
+ *   - Writes to VGA text buffer at physical 0xB8000
+ *   - 80x25 text mode, each cell = char + attribute byte
+ *   - Navy blue background, cyan rectangle border, "WLTIOS" in bright white
+ *
+ * This is the first visual output WLTIOS has ever produced.
+ */
+static int
+cmd_draw(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    printf("=== WLTIOS Draw ===\n");
+
+    /* Try /dev/fb0 first (pixel-perfect framebuffer) */
+    int fb = open("/dev/fb0", O_RDWR);
+    if (fb >= 0)
+    {
+        struct fb_var_screeninfo var;
+        struct fb_fix_screeninfo fix;
+        if (ioctl(fb, FBIOGET_VSCREENINFO, &var) == 0 &&
+            ioctl(fb, FBIOGET_FSCREENINFO, &fix) == 0 &&
+            var.bits_per_pixel == 32)
+        {
+            int fb_w = var.xres;
+            int fb_h = var.yres;
+            size_t fb_size = fix.smem_len;
+            int line_len = fix.line_length;
+
+            printf("  Framebuffer: %dx%d 32bpp (line_length=%d)\n",
+                   fb_w, fb_h, line_len);
+
+            uint8_t *fb_mem = mmap(NULL, fb_size, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0);
+            if (fb_mem != MAP_FAILED)
+            {
+                uint32_t *pixels = (uint32_t *)fb_mem;
+                int ppr = line_len / 4;
+
+                /* Navy background */
+                uint32_t bg = 0xFF1a1a2e;
+                for (int y = 0; y < fb_h; y++)
+                    for (int x = 0; x < fb_w; x++)
+                        pixels[y * ppr + x] = bg;
+                printf("  Background filled (navy)\n");
+
+                /* Cyan rectangle centered */
+                uint32_t fg = 0xFF00d4ff;
+                int rw = fb_w * 56 / 100;
+                int rh = fb_h * 48 / 100;
+                int rx = (fb_w - rw) / 2;
+                int ry = (fb_h - rh) / 2;
+                for (int y = ry; y < ry + rh; y++)
+                    for (int x = rx; x < rx + rw; x++)
+                        if (x >= 0 && x < fb_w && y >= 0 && y < fb_h)
+                            pixels[y * ppr + x] = fg;
+                printf("  Rectangle drawn (cyan %dx%d at %d,%d)\n", rw, rh, rx, ry);
+
+                /* "WLTIOS" in white, scaled 4x, centered */
+                uint32_t tc = 0xFFFFFFFF;
+                const uint8_t *letters[] = {FONT_W, FONT_L, FONT_T, FONT_I, FONT_O, FONT_S};
+                int nletters = 6, cw = 7, ch = 9, spacing = 2;
+                int total_w = nletters * cw + (nletters - 1) * spacing;
+                int scale = 4;
+                int tx = (fb_w - total_w * scale) / 2;
+                int ty = (fb_h - ch * scale) / 2;
+
+                for (int i = 0; i < nletters; i++)
+                {
+                    int cx = tx + i * (cw + spacing) * scale;
+                    for (int row = 0; row < ch; row++)
+                        for (int col = 0; col < cw; col++)
+                            if (letters[i][row] & (0x40 >> col))
+                                for (int dy = 0; dy < scale; dy++)
+                                    for (int dx = 0; dx < scale; dx++)
+                                    {
+                                        int px = cx + col * scale + dx;
+                                        int py = ty + row * scale + dy;
+                                        if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
+                                            pixels[py * ppr + px] = tc;
+                                    }
+                }
+                printf("  Text 'WLTIOS' drawn (white, 4x scale)\n");
+
+                munmap(fb_mem, fb_size);
+                close(fb);
+                printf("=== Draw Complete: navy bg + cyan rect + WLTIOS (framebuffer) ===\n");
+                return 0;
+            }
+        }
+        close(fb);
+        printf("  /dev/fb0 exists but unusable, falling back to VGA text mode\n");
+    }
+
+    /* VGA text mode fallback via /dev/mem at 0xB8000 */
+    printf("  Falling back to VGA text mode (80x25)\n");
+    int mem = open("/dev/mem", O_RDWR);
+    if (mem < 0)
+    {
+        fprintf(stderr, "draw: cannot open /dev/fb0 or /dev/mem: %s\n", strerror(errno));
+        fprintf(stderr, "draw: need framebuffer or /dev/mem support in kernel\n");
+        return 1;
+    }
+
+    /* VGA text buffer: 80x25, 2 bytes per cell, at physical 0xB8000 */
+    uint8_t *vga = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, mem, 0xB8000);
+    if (vga == MAP_FAILED)
+    {
+        fprintf(stderr, "draw: mmap /dev/mem at 0xB8000 failed: %s\n", strerror(errno));
+        close(mem);
+        return 1;
+    }
+
+    /* VGA text mode attributes:
+     * Bits 0-3: foreground, bits 4-6: background
+     * 0=black, 1=blue, 2=green, 3=cyan, 4=red, 5=magenta, 6=brown, 7=white
+     * 8-15 = bright variants (foreground only)
+     */
+    uint8_t bg_attr = 0x01;  /* blue background (closest to navy in VGA palette) */
+    uint8_t rect_attr = 0x3F; /* cyan bg + bright white fg */
+    uint8_t text_attr = 0x3F; /* cyan bg + bright white fg */
+
+    /* Fill entire screen with blue background */
+    for (int i = 0; i < 80 * 25; i++)
+    {
+        vga[i * 2] = ' ';
+        vga[i * 2 + 1] = bg_attr;
+    }
+    printf("  VGA: blue background filled\n");
+
+    /* Draw a cyan rectangle (border) in the center of the screen */
+    /* Rectangle: rows 5-19, cols 10-69 */
+    int rect_top = 5, rect_bottom = 19, rect_left = 10, rect_right = 69;
+    for (int y = rect_top; y <= rect_bottom; y++)
+    {
+        for (int x = rect_left; x <= rect_right; x++)
+        {
+            int idx = (y * 80 + x) * 2;
+            vga[idx] = ' ';
+            vga[idx + 1] = rect_attr;  /* cyan bg */
+        }
+    }
+    printf("  VGA: cyan rectangle drawn (rows %d-%d, cols %d-%d)\n",
+           rect_top, rect_bottom, rect_left, rect_right);
+
+    /* Write "WLTIOS" centered on the rectangle */
+    const char *text = "W L T I O S";
+    int text_len = 11;
+    int text_row = 12;  /* center row */
+    int text_col = (80 - text_len) / 2;
+    for (int i = 0; i < text_len; i++)
+    {
+        int idx = (text_row * 80 + text_col + i) * 2;
+        vga[idx] = text[i];
+        vga[idx + 1] = text_attr;  /* bright white on cyan */
+    }
+    printf("  VGA: 'WLTIOS' written (bright white on cyan)\n");
+
+    /* Draw a border around the rectangle */
+    for (int x = rect_left; x <= rect_right; x++)
+    {
+        vga[(rect_top * 80 + x) * 2] = '=';
+        vga[(rect_top * 80 + x) * 2 + 1] = 0x3F;
+        vga[(rect_bottom * 80 + x) * 2] = '=';
+        vga[(rect_bottom * 80 + x) * 2 + 1] = 0x3F;
+    }
+    for (int y = rect_top; y <= rect_bottom; y++)
+    {
+        vga[(y * 80 + rect_left) * 2] = '|';
+        vga[(y * 80 + rect_left) * 2 + 1] = 0x3F;
+        vga[(y * 80 + rect_right) * 2] = '|';
+        vga[(y * 80 + rect_right) * 2 + 1] = 0x3F;
+    }
+
+    munmap(vga, 4096);
+    close(mem);
+
+    printf("=== Draw Complete: blue bg + cyan rect + WLTIOS (VGA text mode) ===\n");
+    printf("=== Check VNC display to see the output ===\n");
+    return 0;
+}
+
 static int
 cmd_help(int argc, char **argv)
 {
@@ -752,6 +1030,7 @@ cmd_help(int argc, char **argv)
     printf("  netcheck        Check network (interfaces, IP, ping 10.0.2.2)\n");
     printf("  torcheck        Verify Tor routes traffic (via check.torproject.org)\n");
     printf("  tstatus         Show Tor process and port status\n");
+    printf("  draw            Draw to framebuffer (navy bg + cyan rect + WLTIOS)\n");
     printf("  help            Show this help\n");
     printf("  exit            Exit shell\n");
     return 0;
@@ -775,6 +1054,7 @@ static wlt_shell_command_t commands[] = {
     {"netcheck", cmd_netcheck},
     {"torcheck", cmd_torcheck},
     {"tstatus",  cmd_tstatus},
+    {"draw",     cmd_draw},
     {"help",     cmd_help},
     {NULL, NULL},
 };
@@ -839,7 +1119,7 @@ main(int argc, char **argv)
 
  char input[WLT_SHELL_MAX_INPUT];
 
- write(1, "WLTIOS Shell v1.1\r\n", sizeof("WLTIOS Shell v1.1\r\n") - 1);
+ write(1, "WLTIOS Shell v1.2\r\n", sizeof("WLTIOS Shell v1.2\r\n") - 1);
  write(1, "Type 'help' for available commands.\r\n\r\n", sizeof("Type 'help' for available commands.\r\n\r\n") - 1);
 
  while (1)

@@ -1,7 +1,11 @@
 /**
  * @file init-minimal.c
- * @brief Minimal WLTIOS init for QEMU testing (v3 — network + Tor)
+ * @brief Minimal WLTIOS init for QEMU testing (v4 — network + Tor + framebuffer)
  * @module wlt-init
+ *
+ * v4 changes:
+ *   - Framebuffer init: set /dev/fb0 to 1366x768x32 for QEMU -vga std
+ *   - Logs framebuffer status to serial
  *
  * v3 changes:
  *   - wlt-net now does REAL network bringup (qemu_bringup.c)
@@ -18,6 +22,8 @@
 #include <sys/mount.h>
 #include <sys/reboot.h>
 #include <linux/reboot.h>
+#include <linux/fb.h>
+#include <sys/ioctl.h>
 #include <errno.h>
 
 #define WLTIOS_VERSION "0.1.0"
@@ -139,12 +145,49 @@ int main(void)
     print_str("");
     print_str("========================================");
     print_str("       === WLTIOS v0.1.0 ===");
-    print_str("  seL4 -> Linux -> WLT-Init (v3)");
+    print_str("  seL4 -> Linux -> WLT-Init (v4)");
     print_str("========================================");
     print_str("");
 
     print_str("[wlt-init] PID 1 starting");
     print_str("[wlt-init] Mounting filesystems... OK");
+
+    /* Framebuffer init — set /dev/fb0 to 1366x768x32 for QEMU -vga std.
+     * This must happen before any rendering commands (draw, compositor). */
+    {
+        int fb = open("/dev/fb0", O_RDWR);
+        if (fb >= 0) {
+            struct fb_var_screeninfo var;
+            if (ioctl(fb, FBIOGET_VSCREENINFO, &var) == 0) {
+                /* Try to set 1366x768x32 — QEMU -vga std supports this */
+                var.xres = 1366;
+                var.yres = 768;
+                var.xres_virtual = 1366;
+                var.yres_virtual = 768;
+                var.bits_per_pixel = 32;
+                if (ioctl(fb, FBIOPUT_VSCREENINFO, &var) == 0) {
+                    char msg[128];
+                    int n = snprintf(msg, sizeof(msg),
+                                     "[wlt-init] Framebuffer: %ux%ux%u\r\n",
+                                     var.xres, var.yres, var.bits_per_pixel);
+                    write(1, msg, n > 0 ? n : 0);
+                } else {
+                    /* Re-read actual mode if set failed */
+                    ioctl(fb, FBIOGET_VSCREENINFO, &var);
+                    char msg[128];
+                    int n = snprintf(msg, sizeof(msg),
+                                     "[wlt-init] Framebuffer (default): %ux%ux%u\r\n",
+                                     var.xres, var.yres, var.bits_per_pixel);
+                    write(1, msg, n > 0 ? n : 0);
+                }
+            } else {
+                print_str("[wlt-init] Framebuffer: FBIOGET failed");
+            }
+            close(fb);
+        } else {
+            print_str("[wlt-init] No /dev/fb0 (need -vga std in QEMU)");
+        }
+    }
 
     /* wlt-net — REAL network bringup */
     if (access("/sbin/wlt-net", X_OK) == 0) {
