@@ -856,43 +856,56 @@ cmd_draw(int argc, char **argv)
         struct fb_fix_screeninfo fix;
         if (ioctl(fb, FBIOGET_VSCREENINFO, &var) == 0 &&
             ioctl(fb, FBIOGET_FSCREENINFO, &fix) == 0 &&
-            var.bits_per_pixel == 32)
+            (var.bits_per_pixel == 32 || var.bits_per_pixel == 24))
         {
             int fb_w = var.xres;
             int fb_h = var.yres;
             size_t fb_size = fix.smem_len;
             int line_len = fix.line_length;
+            int bpp = var.bits_per_pixel;
+            int bytes_per_pixel = bpp / 8;
 
-            printf("  Framebuffer: %dx%d 32bpp (line_length=%d)\n",
-                   fb_w, fb_h, line_len);
+            printf("  Framebuffer: %dx%d %dbpp (line_length=%d)\n",
+                   fb_w, fb_h, bpp, line_len);
 
             uint8_t *fb_mem = mmap(NULL, fb_size, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0);
             if (fb_mem != MAP_FAILED)
             {
-                uint32_t *pixels = (uint32_t *)fb_mem;
-                int ppr = line_len / 4;
+                /* For 24bpp: 3 bytes per pixel (BGR), for 32bpp: 4 bytes (BGRA) */
+                /* Navy background: R=0x1a, G=0x1a, B=0x2e */
+                uint8_t bg_r = 0x1a, bg_g = 0x1a, bg_b = 0x2e;
+                /* Cyan rectangle: R=0x00, G=0xd4, B=0xff */
+                uint8_t fg_r = 0x00, fg_g = 0xd4, fg_b = 0xff;
+                /* White text: R=0xff, G=0xff, B=0xff */
+                uint8_t tc_r = 0xff, tc_g = 0xff, tc_b = 0xff;
 
-                /* Navy background */
-                uint32_t bg = 0xFF1a1a2e;
+                /* Helper to set a pixel at (x,y) with given RGB */
+                #define SET_PIXEL(x, y, r, g, b) do { \
+                    int _x = (x), _y = (y); \
+                    if (_x >= 0 && _x < fb_w && _y >= 0 && _y < fb_h) { \
+                        uint8_t *_p = fb_mem + (_y * line_len) + (_x * bytes_per_pixel); \
+                        _p[0] = (b); _p[1] = (g); _p[2] = (r); \
+                        if (bytes_per_pixel == 4) _p[3] = 0xFF; \
+                    } \
+                } while(0)
+
+                /* Fill background with navy */
                 for (int y = 0; y < fb_h; y++)
                     for (int x = 0; x < fb_w; x++)
-                        pixels[y * ppr + x] = bg;
+                        SET_PIXEL(x, y, bg_r, bg_g, bg_b);
                 printf("  Background filled (navy)\n");
 
-                /* Cyan rectangle centered */
-                uint32_t fg = 0xFF00d4ff;
+                /* Draw cyan rectangle centered */
                 int rw = fb_w * 56 / 100;
                 int rh = fb_h * 48 / 100;
                 int rx = (fb_w - rw) / 2;
                 int ry = (fb_h - rh) / 2;
                 for (int y = ry; y < ry + rh; y++)
                     for (int x = rx; x < rx + rw; x++)
-                        if (x >= 0 && x < fb_w && y >= 0 && y < fb_h)
-                            pixels[y * ppr + x] = fg;
+                        SET_PIXEL(x, y, fg_r, fg_g, fg_b);
                 printf("  Rectangle drawn (cyan %dx%d at %d,%d)\n", rw, rh, rx, ry);
 
                 /* "WLTIOS" in white, scaled 4x, centered */
-                uint32_t tc = 0xFFFFFFFF;
                 const uint8_t *letters[] = {FONT_W, FONT_L, FONT_T, FONT_I, FONT_O, FONT_S};
                 int nletters = 6, cw = 7, ch = 9, spacing = 2;
                 int total_w = nletters * cw + (nletters - 1) * spacing;
@@ -911,11 +924,12 @@ cmd_draw(int argc, char **argv)
                                     {
                                         int px = cx + col * scale + dx;
                                         int py = ty + row * scale + dy;
-                                        if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
-                                            pixels[py * ppr + px] = tc;
+                                        SET_PIXEL(px, py, tc_r, tc_g, tc_b);
                                     }
                 }
                 printf("  Text 'WLTIOS' drawn (white, 4x scale)\n");
+
+                #undef SET_PIXEL
 
                 munmap(fb_mem, fb_size);
                 close(fb);
@@ -1202,6 +1216,93 @@ cmd_sandbox(int argc, char **argv)
     return 1;
 }
 
+/* ─── TCP test command (kill switch verification) ──── */
+
+/**
+ * tcptest — try a direct TCP connection to an IP:port (NOT through Tor).
+ *
+ * This is used to verify the kill switch: when killswitch is on,
+ * direct TCP to external IPs should fail (timeout/refused).
+ * When killswitch is off, it should succeed.
+ *
+ * Usage: tcptest <ip> <port>
+ * Example: tcptest 8.8.8.8 80
+ */
+static int
+cmd_tcptest(int argc, char **argv)
+{
+    if (argc < 3)
+    {
+        printf("Usage: tcptest <ip> <port>\n");
+        printf("Tries a direct TCP connection (NOT through Tor).\n");
+        printf("Use to verify kill switch: 'tcptest 8.8.8.8 80'\n");
+        return 1;
+    }
+
+    const char *ip = argv[1];
+    int port = atoi(argv[2]);
+    if (port <= 0 || port > 65535)
+    {
+        fprintf(stderr, "tcptest: invalid port '%s'\n", argv[2]);
+        return 1;
+    }
+
+    printf("=== Direct TCP Test: %s:%d ===\n", ip, port);
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0)
+    {
+        fprintf(stderr, "  socket: %s\n", strerror(errno));
+        return 1;
+    }
+
+    /* Set 5s timeout */
+    struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1)
+    {
+        fprintf(stderr, "  invalid IP: %s\n", ip);
+        close(sock);
+        return 1;
+    }
+
+    printf("  Connecting...\n");
+    int rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc < 0)
+    {
+        printf("  RESULT: BLOCKED (%s)\n", strerror(errno));
+        printf("=== Kill switch is ACTIVE — direct TCP blocked ===\n");
+        close(sock);
+        return 0;  /* return 0 = blocked, which is expected with killswitch on */
+    }
+
+    printf("  RESULT: CONNECTED (direct TCP works)\n");
+    printf("=== Kill switch is OFF — direct TCP succeeded ===\n");
+
+    /* Try sending a minimal HTTP HEAD */
+    const char *req = "HEAD / HTTP/1.0\r\nHost: ";
+    write(sock, req, strlen(req));
+    write(sock, ip, strlen(ip));
+    write(sock, "\r\n\r\n", 4);
+
+    char buf[256];
+    ssize_t n = read(sock, buf, sizeof(buf) - 1);
+    if (n > 0)
+    {
+        buf[n] = '\0';
+        printf("  Response (%zd bytes): %.80s\n", n, buf);
+    }
+
+    close(sock);
+    return 1;  /* return 1 = connected, which means killswitch is off */
+}
+
 static int
 cmd_help(int argc, char **argv)
 {
@@ -1223,6 +1324,7 @@ cmd_help(int argc, char **argv)
     printf("  killswitch off Allow all traffic (OUTPUT ACCEPT)\n");
     printf("  killswitch status Show current iptables rules\n");
     printf("  sandbox <cmd>   Run command in isolated network namespace\n");
+    printf("  tcptest <ip> <port> Direct TCP test (kill switch verification)\n");
     printf("  help            Show this help\n");
     printf("  exit            Exit shell\n");
     return 0;
@@ -1249,6 +1351,7 @@ static wlt_shell_command_t commands[] = {
     {"draw",     cmd_draw},
     {"killswitch", cmd_killswitch},
     {"sandbox",  cmd_sandbox},
+    {"tcptest",  cmd_tcptest},
     {"help",     cmd_help},
     {NULL, NULL},
 };

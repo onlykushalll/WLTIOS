@@ -207,6 +207,33 @@ int main(void)
         }
     }
 
+    /* Load e1000 kernel module (Debian kernel has e1000 as module, not built-in).
+     * Uses finit_module() syscall to load .ko from initramfs.
+     * On i386, __NR_finit_module = 350. On x86_64 it's 313. */
+    {
+        int mfd = open("/lib/modules/e1000.ko", O_RDONLY);
+        if (mfd >= 0)
+        {
+            /* i386 syscall number for finit_module */
+            #ifdef __i386__
+            #define __NR_finit_module 350
+            #else
+            #define __NR_finit_module 313
+            #endif
+            long ret = syscall(__NR_finit_module, mfd, "", 0);
+            if (ret == 0)
+                print_str("[wlt-init] Loaded e1000.ko module");
+            else
+            {
+                char msg[80];
+                int n = snprintf(msg, sizeof(msg),
+                    "[wlt-init] e1000.ko load: ret=%ld errno=%d\r\n", ret, errno);
+                write(1, msg, n > 0 ? n : 0);
+            }
+            close(mfd);
+        }
+    }
+
     /* wlt-net — REAL network bringup */
     if (access("/sbin/wlt-net", X_OK) == 0) {
         if (try_exec("/sbin/wlt-net") == 0)
