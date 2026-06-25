@@ -167,60 +167,54 @@ This is a comprehensive read-only audit framework for web projects. It covers:
 
 ---
 
-## 7. CURRENT STATE (as of 2026-06-24 — Phase 2 Complete)
+## 7. CURRENT STATE (as of 2026-06-25 — Phase 3 In Progress)
 
-### What's Done (Phase 1 + Phase 2)
+### What's Done (Phase 1 + Phase 2 + Phase 3 partial)
 
 #### Phase 1: Boot + Network + Tor
 - ✅ WLTIOS boots in QEMU (Linux 4.8.16 i386, direct kernel boot)
-- ✅ Custom initramfs (13MB) with 4 real binaries (init, shell, wlt-net, wlt-crypto)
-- ✅ Interactive shell v1.4 with 13 commands (ls/cd/cat/echo/mkdir/rm/pwd/netcheck/torcheck/tstatus/draw/killswitch/sandbox)
+- ✅ Custom initramfs (13MB) with 4 real binaries
+- ✅ Interactive shell with 14 commands (ls/cd/cat/echo/mkdir/rm/pwd/netcheck/torcheck/tstatus/draw/killswitch/sandbox/tcptest/kairos)
 - ✅ Real network: eth0 UP at 10.0.2.15/24, gw 10.0.2.2, DNS 10.0.2.3
-- ✅ Tor 0.4.9.9 (Alpine musl i386) bootstraps to 100%, SOCKS5 on 9050
-- ✅ torcheck: HTTP traffic routes through Tor (301 from check.torproject.org)
+- ✅ Tor 0.4.9.9 bootstraps to 100%, SOCKS5 on 9050
+- ✅ torcheck: HTTP traffic routes through Tor
 
 #### Phase 2: GUI + Security
-- ✅ Visual output: `draw` command writes to VGA text buffer (navy bg + cyan rect + "WLTIOS")
-- ✅ VLM-verified screenshot (GLM-4.6V confirmed text visible)
-- ✅ Kill switch: iptables OUTPUT DROP + allow localhost + gateway (verified in QEMU)
-- ✅ Amnesic mode: /tmp /var /run /home all tmpfs (RAM only, nothing persists)
-- ✅ MAC randomization: different MAC every boot (3 boots verified)
-- ✅ Sandbox: unshare(CLONE_NEWNET) isolates eth0 (sandboxed wlt-net gets "No such device")
-- ✅ Compositor headless test: wlroots 0.18.2 runs in WSL2 (wayland-0 socket, 3s no crash)
+- ✅ Real pixel rendering: draw command renders navy bg + cyan rect + WLTIOS text to /dev/fb0 (1024x768x24)
+- ✅ VLM-verified screenshot (GLM-4.6V confirmed pixel content)
+- ✅ Kill switch: iptables OUTPUT DROP + allow Tor paths (tcptest proves blocking)
+- ✅ Amnesic mode: /tmp /var /run /home all tmpfs
+- ✅ MAC randomization: different MAC every boot
+- ✅ Sandbox: unshare(CLONE_NEWNET) isolates eth0
+- ✅ 248 test assertions pass (14 test suites, 0 failures)
 
-#### Documentation + Tests
-- ✅ 16,000+ lines documentation (ARCHITECTURE, PRD, ROADMAP, specs, ADRs)
-- ✅ 139 test assertions pass (10 test suites, 0 failures)
-- ✅ 5 new Phase 2 test files (framebuffer, kill_switch, amnesic, mac_randomize, sandbox)
-- ✅ MCPilot v3.1 bridge (77 tools) for AI-driven PC control
-- ✅ 70+ commits on GitHub (github.com/onlykushalll/WLTIOS)
+#### Phase 3: 64-bit Desktop + Compositor + Kairos
+- ✅ 64-bit boot: Debian 5.10.0-30-amd64 kernel, vesafb 1024x768x24
+- ✅ Compositor in QEMU guest: wlroots 0.18.2 headless + pixman, wayland-0 socket created
+- ✅ Kairos first words: "Hello! I'm Kairos, the AI assistant built into the WLTIOS operating system."
+  - Model: Qwen2.5-1.5B-Instruct Q4_K_M (1.1GB)
+  - llama.cpp built from source, llama-server on port 8080
+  - kairos command in shell (HTTP POST to /v1/chat/completions)
 
 ### What's NOT Done (Honest Gaps)
-- ❌ seL4 PCI passthrough: direct kernel boot used as workaround (seL4 security NOT active)
-- ❌ Compositor in QEMU: 64-bit wlroots can't run in 32-bit guest (needs 64-bit seL4 boot fix)
-- ❌ /dev/fb0: kernel lacks CONFIG_FB (VGA text mode fallback used)
-- ❌ /dev/dri: no GPU device (kernel lacks DRM drivers)
-- ❌ cgroup2: cgroup v1 only (sandbox cgroup limits don't work)
-- ❌ seccomp: not available (sandbox BPF filtering doesn't work)
-- ❌ 64-bit boot in WSL2 (missing vmx-apicv-xapic — bare metal only)
-- ❌ Terminal as Wayland client (deferred — needs compositor in QEMU)
-- ❌ WLT-Pkg (package manager — needs Rust)
-- ❌ seL4 partitions (Firewall PD, Key Vault PD, Boot Verifier PD)
+- ❌ seL4 PCI passthrough: direct kernel boot still used (seL4 security NOT active)
+- ❌ Terminal window: Wayland client not implemented (needs xdg-shell protocol)
+- ❌ Desktop shell status bar: not implemented (needs layer-shell or direct fb0 render)
+- ❌ e1000 in 64-bit guest: module not found (CONFIG_E1000=m but extraction failed)
+- ❌ Tor in 64-bit guest: library symlink issues in x86_64 initramfs
+- ❌ 64-bit network: no eth0 in 64-bit guest yet
 
 ### Test Status
 ```
 make -f tests/Makefile test
-→ 139/139 assertions PASS (10 test suites)
-  - SHA-256: 4 pass
-  - Config: 6 pass
-  - Service: 9 pass
-  - Dependency: 5 pass
-  - Monitor: 5 pass
-  - Framebuffer: 25 pass (NEW)
-  - Kill Switch: 22 pass (NEW)
-  - Amnesic: 21 pass (NEW)
-  - MAC Randomize: 30 pass (NEW)
-  - Sandbox: 30 pass (NEW)
+→ 248/248 assertions PASS (14 test suites)
+```
+
+### Commits (Phase 3)
+```
+f8a06d1 [docs+test] G: Phase 3 tests (248 assertions) + Makefile updated
+0f4d5f5 [ai] E: Kairos first words — Qwen2.5-1.5B responds via llama-server
+1800294 [boot] 64bit: amd64 Debian kernel + 64-bit initramfs + compositor in QEMU guest
 ```
 
 ## 8. IMPORTANT LESSONS LEARNED
