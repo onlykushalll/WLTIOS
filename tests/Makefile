@@ -1,19 +1,8 @@
 # WLTIOS Test Runner Makefile
-# Compiles and runs all unit tests
-#
-# Usage (from project root):
-#   make -f tests/Makefile test       # Run all tests
-#   make -f tests/Makefile clean      # Clean test binaries
-
 CC = gcc
-CFLAGS = -Wall -Wextra -std=gnu11 -O2 -g -w \
-	 -Dbool=int -Dtrue=1 -Dfalse=0 -DCHAR16=uint16_t \
-	 -include stdarg.h
-
+CFLAGS = -Wall -Wextra -std=gnu11 -O2 -g -w -Dbool=int -Dtrue=1 -Dfalse=0 -DCHAR16=uint16_t -include stdarg.h
 BOOT_INC = -Isrc/boot/wlt-boot/include
 INIT_INC = -Isrc/userspace/wlt-init/include
-
-# Test binaries (output to /tmp to avoid polluting repo)
 OUT = /tmp/wlt-test
 
 .PHONY: all test clean
@@ -53,7 +42,19 @@ test:
 	@echo "--- Sandbox ---"
 	@$(CC) $(CFLAGS) -o $(OUT)-sb tests/userspace/sandbox_test.c && $(OUT)-sb || echo "FAIL"
 	@echo ""
+	@echo "--- Kairos AI ---"
+	@$(CC) $(CFLAGS) -o $(OUT)-kai tests/userspace/kairos_test.c && $(OUT)-kai || echo "FAIL"
+	@echo ""
+	@echo "--- Launcher ---"
+	@$(CC) $(CFLAGS) -o $(OUT)-lau tests/userspace/launcher_test.c && $(OUT)-lau || echo "FAIL"
+	@echo ""
+	@echo "--- Shell Draw ---"
+	@$(CC) $(CFLAGS) -o $(OUT)-drw tests/userspace/shell_draw_test.c && $(OUT)-drw || echo "FAIL"
+	@echo ""
+	@echo "--- Compositor Status ---"
+	@$(CC) $(CFLAGS) -o $(OUT)-cmp tests/userspace/compositor_status_test.c && $(OUT)-cmp || echo "FAIL"
+	@echo ""
 	@echo "=== All Tests Complete ==="
 
 clean:
-	rm -f $(OUT)-sha $(OUT)-cfg $(OUT)-svc $(OUT)-dep $(OUT)-mon $(OUT)-fb $(OUT)-ks $(OUT)-amn $(OUT)-mac $(OUT)-sb
+	rm -f $(OUT)-*
