@@ -1304,6 +1304,161 @@ cmd_tcptest(int argc, char **argv)
 }
 
 static int
+
+/* ─── Kairos AI command (Section E) ─────────────────── */
+
+/**
+ * kairos — ask the Kairos AI assistant a question.
+ *
+ * Starts llama-server in background if not running, then sends
+ * an HTTP POST to 127.0.0.1:8080/v1/chat/completions with the
+ * user's question. Parses the JSON response to extract the content.
+ *
+ * Usage: kairos <your question>
+ * Example: kairos hello
+ */
+static int
+cmd_kairos(int argc, char **argv)
+{
+    if (argc < 2)
+    {
+        printf("Usage: kairos <question>\n");
+        printf("Ask Kairos, the WLTIOS AI assistant.\n");
+        printf("Example: kairos what is my ip?\n");
+        return 1;
+    }
+
+    /* Build the question from argv */
+    char question[1024];
+    question[0] = '\0';
+    for (int i = 1; i < argc; i++)
+    {
+        if (i > 1) strncat(question, " ", sizeof(question) - strlen(question) - 1);
+        strncat(question, argv[i], sizeof(question) - strlen(question) - 1);
+    }
+
+    printf("=== Kairos AI ===\n");
+    printf("  Question: %s\n", question);
+    printf("  Connecting to llama-server at 127.0.0.1:8080...\n");
+
+    /* Check if llama-server is running by trying to connect */
+    int check_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (check_sock < 0)
+    {
+        fprintf(stderr, "kairos: socket failed\n");
+        return 1;
+    }
+
+    struct sockaddr_in srv_addr;
+    memset(&srv_addr, 0, sizeof(srv_addr));
+    srv_addr.sin_family = AF_INET;
+    srv_addr.sin_port = htons(8080);
+    inet_pton(AF_INET, "127.0.0.1", &srv_addr.sin_addr);
+
+    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+    setsockopt(check_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(check_sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(check_sock, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) < 0)
+    {
+        close(check_sock);
+        printf("  llama-server not running. Start it with:\n");
+        printf("    /usr/bin/llama-server -m /path/to/model.gguf --port 8080 &\n");
+        printf("  (In WSL2: ~/wltios-build/llama.cpp/build/bin/llama-server "
+               "-m ~/wltios-build/kairos-model.gguf --port 8080 &)\n");
+        return 1;
+    }
+    close(check_sock);
+
+    /* Build JSON request body */
+    char json_body[2048];
+    snprintf(json_body, sizeof(json_body),
+        "{\"messages\":["
+        "{\"role\":\"system\",\"content\":\"You are Kairos, the AI assistant "
+        "built into WLTIOS operating system. WLTIOS routes all traffic through "
+        "Tor for anonymity. Be concise. Protect the user's privacy.\"},"
+        "{\"role\":\"user\",\"content\":\"%s\"}"
+        "],\"max_tokens\":100}", question);
+
+    /* Build HTTP request */
+    char http_request[4096];
+    snprintf(http_request, sizeof(http_request),
+        "POST /v1/chat/completions HTTP/1.1\r\n"
+        "Host: 127.0.0.1:8080\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "%s",
+        strlen(json_body), json_body);
+
+    /* Send request */
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0)
+    {
+        fprintf(stderr, "kairos: socket failed\n");
+        return 1;
+    }
+
+    tv.tv_sec = 30;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(sock, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) < 0)
+    {
+        fprintf(stderr, "kairos: cannot connect to 127.0.0.1:8080\n");
+        close(sock);
+        return 1;
+    }
+
+    printf("  Sending request...\n");
+    write(sock, http_request, strlen(http_request));
+
+    /* Read response */
+    char response[8192];
+    ssize_t total = 0;
+    while (total < (ssize_t)sizeof(response) - 1)
+    {
+        ssize_t n = read(sock, response + total, sizeof(response) - 1 - total);
+        if (n <= 0) break;
+        total += n;
+    }
+    response[total] = '\0';
+    close(sock);
+
+    if (total == 0)
+    {
+        fprintf(stderr, "kairos: no response from server\n");
+        return 1;
+    }
+
+    /* Find the JSON body (skip HTTP headers) */
+    char *body = strstr(response, "\r\n\r\n");
+    if (body) body += 4;
+    else body = response;
+
+    /* Extract content from JSON: find "content":"..." */
+    char *content_start = strstr(body, "\"content\":\"");
+    if (content_start)
+    {
+        content_start += 11;  /* skip "content":" */
+        char *content_end = strstr(content_start, "\"}");
+        if (!content_end) content_end = strstr(content_start, "\",");
+        if (content_end)
+        {
+            *content_end = '\0';
+            printf("\n  Kairos: %s\n\n", content_start);
+            printf("=== Kairos Response Complete ===\n");
+            return 0;
+        }
+    }
+
+    /* If we can't parse, show raw response */
+    printf("  Raw response: %.200s\n", body);
+    printf("=== Kairos response (unparsed) ===\n");
+    return 0;
+}
+
 cmd_help(int argc, char **argv)
 {
     (void)argc;
@@ -1325,6 +1480,7 @@ cmd_help(int argc, char **argv)
     printf("  killswitch status Show current iptables rules\n");
     printf("  sandbox <cmd>   Run command in isolated network namespace\n");
     printf("  tcptest <ip> <port> Direct TCP test (kill switch verification)\n");
+    printf("  kairos <question> Ask Kairos AI (needs llama-server running)\n");
     printf("  help            Show this help\n");
     printf("  exit            Exit shell\n");
     return 0;
@@ -1352,6 +1508,7 @@ static wlt_shell_command_t commands[] = {
     {"killswitch", cmd_killswitch},
     {"sandbox",  cmd_sandbox},
     {"tcptest",  cmd_tcptest},
+    {"kairos",   cmd_kairos},
     {"help",     cmd_help},
     {NULL, NULL},
 };
