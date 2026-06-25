@@ -80,20 +80,20 @@ static int try_exec(const char *path)
 static pid_t start_tor_background(void)
 {
     /* Tor is a musl-linked binary. The loader path differs by architecture:
-     *   i386:   /lib/ld-musl-i386.so.1
-     *   x86_64: /lib/ld-musl-x86_64.so.1
+     *   i386:   /lib64/ld-linux-x86-64.so.2
+     *   x86_64: /lib64/ld-linux-x86-64.so.2
      * We detect which one exists and use it. */
     const char *loader = NULL;
-    if (access("/lib/ld-musl-x86_64.so.1", X_OK) == 0)
-        loader = "/lib/ld-musl-x86_64.so.1";
-    else if (access("/lib/ld-musl-i386.so.1", X_OK) == 0)
-        loader = "/lib/ld-musl-i386.so.1";
+    if (access("/lib64/ld-linux-x86-64.so.2", X_OK) == 0)
+        loader = "/lib64/ld-linux-x86-64.so.2";
+    else if (access("/lib64/ld-linux-x86-64.so.2", X_OK) == 0)
+        loader = "/lib64/ld-linux-x86-64.so.2";
 
     const char *tor_bin = "/usr/bin/tor";
 
     if (loader == NULL)
     {
-        print_str("[wlt-init] ld-musl loader not found — skipping Tor");
+        print_str("[wlt-init] glibc/musl loader not found — skipping Tor");
         return -1;
     }
     if (access(tor_bin, X_OK) != 0)
