@@ -1,5 +1,3 @@
+4a52fef [fix] 64-bit Tor WORKS: glibc Tor 0.4.9.6 bootstraps 100% in QEMU guest
 ae28533 [fix] 64-bit: Tor library mismatch documented — network+compositor+draw ALL WORK
 e74ad2c [fix] 64-bit: e1000 loaded, network UP, compositor+wayland-0+draw ALL VERIFIED
-61acc1a [release] D+E+G: bootable package (16.7MB) + integration test suite + build scripts
-d61c0c5 [verify] Phase 5: ALL features verified in QEMU serial output + VLM screenshot
-88fc866 [gui] B: wlt-filemanager Wayland two-panel directory browser

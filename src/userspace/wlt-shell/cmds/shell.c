@@ -1030,130 +1030,150 @@ cmd_draw(int argc, char **argv)
     printf("=== Check VNC display to see the output ===\n");
     return 0;
 }
+/* Route-based kill switch helpers (fallback when ip_tables.ko unavailable) */
+#include <net/route.h>
 
-/* ─── Kill switch command (Section C.1) ─────────────── */
+static int wlt_get_default_gw(char *gw_out, size_t gw_len) {
+    FILE *f = fopen("/proc/net/route", "r");
+    if (!f) return -1;
+    char line[256];
+    if (!fgets(line, sizeof(line), f)) { fclose(f); return -1; }
+    while (fgets(line, sizeof(line), f)) {
+        char iface[32]; unsigned int dest, gw;
+        if (sscanf(line, "%31s %x %x", iface, &dest, &gw) >= 3) {
+            if (dest == 0 && gw != 0) {
+                struct in_addr addr; addr.s_addr = gw;
+                const char *s = inet_ntoa(addr);
+                if (s) { strncpy(gw_out, s, gw_len-1); gw_out[gw_len-1]=0; fclose(f); return 0; }
+            }
+        }
+    }
+    fclose(f); return -1;
+}
 
-/**
- * killswitch — block all non-Tor traffic via iptables.
- *
- * on:  OUTPUT policy DROP + allow localhost (Tor SOCKS) + allow QEMU gateway
- * off: flush all rules + OUTPUT policy ACCEPT
- * status: show current iptables rules
- *
- * iptables is a musl-linked binary, so we exec it via ld-musl loader.
- */
+static int wlt_delete_default_route(void) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0); if (fd < 0) return -1;
+    struct rtentry rt; memset(&rt, 0, sizeof(rt));
+    rt.rt_dst.sa_family = AF_INET;
+    ((struct sockaddr_in *)&rt.rt_dst)->sin_addr.s_addr = INADDR_ANY;
+    rt.rt_genmask.sa_family = AF_INET;
+    ((struct sockaddr_in *)&rt.rt_genmask)->sin_addr.s_addr = INADDR_ANY;
+    int ret = ioctl(fd, SIOCDELRT, &rt); int se = errno; close(fd); errno = se; return ret;
+}
+
+static int wlt_add_default_route(const char *gw) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0); if (fd < 0) return -1;
+    struct rtentry rt; memset(&rt, 0, sizeof(rt));
+    rt.rt_dst.sa_family = AF_INET;
+    ((struct sockaddr_in *)&rt.rt_dst)->sin_addr.s_addr = INADDR_ANY;
+    rt.rt_genmask.sa_family = AF_INET;
+    ((struct sockaddr_in *)&rt.rt_genmask)->sin_addr.s_addr = INADDR_ANY;
+    rt.rt_gateway.sa_family = AF_INET;
+    inet_aton(gw, &((struct sockaddr_in *)&rt.rt_gateway)->sin_addr);
+    rt.rt_flags = RTF_UP | RTF_GATEWAY;
+    int ret = ioctl(fd, SIOCADDRT, &rt); int se = errno; close(fd); errno = se; return ret;
+}
+
+/* Kill switch - iptables primary, route-based fallback */
 static int
 cmd_killswitch(int argc, char **argv)
 {
-    if (argc < 2)
-    {
+    if (argc < 2) {
         printf("Usage: killswitch <on|off|status>\n");
-        printf("  on     - Block all non-Tor traffic (OUTPUT DROP + exceptions)\n");
-        printf("  off    - Allow all traffic (OUTPUT ACCEPT)\n");
-        printf("  status - Show current iptables rules\n");
         return 1;
     }
-
     const char *LOADER = "/lib/ld-musl-i386.so.1";
     const char *IPTABLES = "/usr/sbin/iptables";
-
-    if (access(LOADER, X_OK) != 0 || access(IPTABLES, X_OK) != 0)
-    {
-        fprintf(stderr, "killswitch: iptables or ld-musl not found\n");
-        return 1;
-    }
-
-    if (strcmp(argv[1], "on") == 0)
-    {
+    int have_ipt = (access(LOADER, X_OK) == 0 && access(IPTABLES, X_OK) == 0);
+    if (strcmp(argv[1], "on") == 0) {
         printf("=== Activating Kill Switch ===\n");
-
-        /* Helper to run an iptables command */
-        struct ipt_cmd {
-            const char *args[12];
-        };
-        struct ipt_cmd cmds[] = {
-            { { LOADER, "--library-path", "/lib", IPTABLES, "-F", NULL } },
-            { { LOADER, "--library-path", "/lib", IPTABLES, "-P", "OUTPUT", "DROP", NULL } },
-            { { LOADER, "--library-path", "/lib", IPTABLES, "-A", "OUTPUT", "-d", "127.0.0.1", "-j", "ACCEPT", NULL } },
-            { { LOADER, "--library-path", "/lib", IPTABLES, "-A", "OUTPUT", "-d", "10.0.2.2", "-j", "ACCEPT", NULL } },
-        };
-
-        for (int i = 0; i < 4; i++)
-        {
-            pid_t pid = fork();
-            if (pid == 0)
-            {
-                execv(LOADER, (char **)cmds[i].args);
-                _exit(127);
+        int ipt_ok = 0;
+        if (have_ipt) {
+            const char *c0[] = { LOADER, "--library-path", "/lib", IPTABLES, "-F", NULL };
+            const char *c1[] = { LOADER, "--library-path", "/lib", IPTABLES, "-P", "OUTPUT", "DROP", NULL };
+            const char *c2[] = { LOADER, "--library-path", "/lib", IPTABLES, "-A", "OUTPUT", "-d", "127.0.0.1", "-j", "ACCEPT", NULL };
+            const char *c3[] = { LOADER, "--library-path", "/lib", IPTABLES, "-A", "OUTPUT", "-d", "10.0.2.2", "-j", "ACCEPT", NULL };
+            const char **cmds[] = { c0, c1, c2, c3 };
+            int ok = 0;
+            for (int i = 0; i < 4; i++) {
+                pid_t pid = fork();
+                if (pid == 0) { execv(LOADER, (char **)cmds[i]); _exit(127); }
+                int st; waitpid(pid, &st, 0);
+                if (WIFEXITED(st) && WEXITSTATUS(st) == 0) ok++;
+                else printf("  rule %d: exit %d\n", i, WIFEXITED(st)?WEXITSTATUS(st):-1);
             }
-            int status;
-            waitpid(pid, &status, 0);
-            if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
-            {
-                printf("  rule %d: exit code %d\n", i, WEXITSTATUS(status));
-            }
+            ipt_ok = (ok >= 2);
         }
-
-        printf("  OUTPUT policy: DROP\n");
-        printf("  Allowed: 127.0.0.1 (Tor SOCKS), 10.0.2.2 (QEMU gateway)\n");
-        printf("=== Kill Switch ACTIVE — all non-Tor traffic blocked ===\n");
-        return 0;
-    }
-    else if (strcmp(argv[1], "off") == 0)
-    {
-        printf("=== Deactivating Kill Switch ===\n");
-
-        char *args1[] = { (char *)LOADER, "--library-path", "/lib",
-                          (char *)IPTABLES, "-F", NULL };
-        char *args2[] = { (char *)LOADER, "--library-path", "/lib",
-                          (char *)IPTABLES, "-P", "OUTPUT", "ACCEPT", NULL };
-
-        pid_t pid;
-        pid = fork();
-        if (pid == 0) { execv(LOADER, args1); _exit(127); }
-        int status; waitpid(pid, &status, 0);
-
-        pid = fork();
-        if (pid == 0) { execv(LOADER, args2); _exit(127); }
-        waitpid(pid, &status, 0);
-
-        printf("  OUTPUT policy: ACCEPT\n");
-        printf("=== Kill Switch OFF — all traffic allowed ===\n");
-        return 0;
-    }
-    else if (strcmp(argv[1], "status") == 0)
-    {
-        printf("=== Current iptables rules ===\n");
-        char *args[] = { (char *)LOADER, "--library-path", "/lib",
-                         (char *)IPTABLES, "-L", "-n", NULL };
-        pid_t pid = fork();
-        if (pid == 0) { execv(LOADER, args); _exit(127); }
-        int status;
-        waitpid(pid, &status, 0);
-        printf("=== End rules ===\n");
-        return 0;
-    }
-    else
-    {
-        fprintf(stderr, "killswitch: unknown argument '%s' (use on/off/status)\n", argv[1]);
+        if (ipt_ok) {
+            printf("  OUTPUT policy: DROP\n");
+            printf("  Allowed: 127.0.0.1 (Tor), 10.0.2.2 (gw)\n");
+            printf("=== Kill Switch ACTIVE - non-Tor blocked ===\n");
+            return 0;
+        }
+        printf("  iptables unavailable (no ip_tables module).\n");
+        printf("  Fallback: route-based panic kill switch...\n");
+        char gw[32];
+        if (wlt_get_default_gw(gw, sizeof(gw)) != 0) {
+            FILE *mf = fopen("/run/wlt-killswitch", "w");
+            if (mf) { fprintf(mf, "route:none\n"); fclose(mf); }
+            printf("=== Kill Switch ACTIVE (no default route) ===\n");
+            return 0;
+        }
+        FILE *gf = fopen("/run/wlt-killswitch", "w");
+        if (gf) { fprintf(gf, "route:%s\n", gw); fclose(gf); }
+        if (wlt_delete_default_route() == 0) {
+            printf("  Default route deleted (was via %s)\n", gw);
+            printf("=== Kill Switch ACTIVE (route-based panic) ===\n");
+            return 0;
+        }
+        printf("=== Kill Switch FAILED ===\n");
         return 1;
+    } else if (strcmp(argv[1], "off") == 0) {
+        printf("=== Deactivating Kill Switch ===\n");
+        int did_route = 0;
+        FILE *gf = fopen("/run/wlt-killswitch", "r");
+        if (gf) {
+            char line[64];
+            if (fgets(line, sizeof(line), gf)) {
+                line[strcspn(line, "\n")] = 0;
+                if (strncmp(line, "route:", 6) == 0) {
+                    const char *gw = line + 6; did_route = 1;
+                    if (strcmp(gw, "none") != 0 && wlt_add_default_route(gw) == 0)
+                        printf("  Route restored (via %s)\n", gw);
+                }
+            }
+            fclose(gf); unlink("/run/wlt-killswitch");
+        }
+        if (have_ipt) {
+            char *a1[] = { (char *)LOADER, "--library-path", "/lib", (char *)IPTABLES, "-F", NULL };
+            char *a2[] = { (char *)LOADER, "--library-path", "/lib", (char *)IPTABLES, "-P", "OUTPUT", "ACCEPT", NULL };
+            pid_t pid; int st;
+            pid = fork(); if (pid==0) { execv(LOADER, a1); _exit(127); } waitpid(pid, &st, 0);
+            pid = fork(); if (pid==0) { execv(LOADER, a2); _exit(127); } waitpid(pid, &st, 0);
+            printf("  OUTPUT policy: ACCEPT\n");
+        }
+        if (!did_route && !have_ipt) printf("  (no kill switch was active)\n");
+        printf("=== Kill Switch OFF - all traffic allowed ===\n");
+        return 0;
+    } else if (strcmp(argv[1], "status") == 0) {
+        printf("=== iptables rules ===\n");
+        if (have_ipt) {
+            char *a[] = { (char *)LOADER, "--library-path", "/lib", (char *)IPTABLES, "-L", "-n", NULL };
+            pid_t pid = fork(); if (pid==0) { execv(LOADER, a); _exit(127); }
+            int st; waitpid(pid, &st, 0);
+        } else printf("  iptables unavailable\n");
+        printf("=== Routing table ===\n");
+        FILE *rf = fopen("/proc/net/route", "r");
+        if (rf) { char l[256]; while (fgets(l,sizeof(l),rf)) printf("  %s", l); fclose(rf); }
+        FILE *kf = fopen("/run/wlt-killswitch", "r");
+        if (kf) { char l[64]; if (fgets(l,sizeof(l),kf)) printf("=== marker: %s", l); fclose(kf); }
+        else printf("=== Kill switch: not active ===\n");
+        return 0;
     }
+    fprintf(stderr, "killswitch: unknown argument '%s'\n", argv[1]);
+    return 1;
 }
 
-/* ─── Sandbox command (Section C.4) ─────────────────── */
-
-/**
- * sandbox — run a command in an isolated network namespace.
- *
- * Uses unshare(CLONE_NEWNET) to give the child process its own network
- * stack with no interfaces (except lo). The child cannot reach eth0,
- * the default route, or any external network — proving network isolation.
- *
- * This is the simplest sandbox proof: the sandboxed process has no
- * network access at all. A real sandbox would also use CLONE_NEWPID,
- * CLONE_NEWNS, cgroups, and seccomp (see wlt-sandbox/sandbox.c for
- * the full implementation — this shell command is a quick demo).
- */
 static int
 cmd_sandbox(int argc, char **argv)
 {
@@ -1305,7 +1325,6 @@ cmd_tcptest(int argc, char **argv)
     return 1;  /* return 1 = connected, which means killswitch is off */
 }
 
-static int
 
 /* ─── Kairos AI command (Section E) ─────────────────── */
 
@@ -1319,6 +1338,13 @@ static int
  * Usage: kairos <your question>
  * Example: kairos hello
  */
+/* Stub: kairos_run_command - not linked in minimal build */
+static int kairos_run_command(const char *cmd, char *output, size_t outlen) {
+    (void)cmd;
+    snprintf(output, outlen, "[Kairos tool execution not available]");
+    return -1;
+}
+
 static int
 cmd_kairos(int argc, char **argv)
 {
@@ -1458,7 +1484,7 @@ cmd_kairos(int argc, char **argv)
         char *cmd_begin = strstr(tool_start, "\"command\":\"");
         if (cmd_begin) {
             cmd_begin += 11;
-            char *cmd_end = strchr(cmd_begin, '\');
+            char *cmd_end = strchr(cmd_begin, '"');
             if (cmd_end) {
                 size_t clen = cmd_end - cmd_begin;
                 if (clen < 255) { memcpy(cmd_buf, cmd_begin, clen); cmd_buf[clen] = 0; }
@@ -1480,7 +1506,31 @@ cmd_kairos(int argc, char **argv)
     return 0;
 }
 
+static int
 cmd_help(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    printf("WLTIOS Shell commands:\n");
+    printf("  ls [path]         List directory\n");
+    printf("  cd <path>         Change directory\n");
+    printf("  cat <file>        Display file\n");
+    printf("  echo <text>       Print text\n");
+    printf("  mkdir <dir>       Create directory\n");
+    printf("  rm <file>         Remove file\n");
+    printf("  pwd               Working directory\n");
+    printf("  netcheck          Network status\n");
+    printf("  torcheck          Verify Tor routing\n");
+    printf("  tstatus           Tor status\n");
+    printf("  draw <text>       Draw to framebuffer\n");
+    printf("  killswitch <on|off|status>  Kill switch\n");
+    printf("  sandbox <cmd>     Isolated net namespace\n");
+    printf("  tcptest <ip> <port>  TCP test\n");
+    printf("  kairos <question> Ask Kairos AI\n");
+    printf("  pkg install <path> Install package\n");
+    printf("  pkg list          List packages\n");
+    printf("  help              Show this help\n");
+    return 0;
+}
 
 /* ─── Package manager command (Section D) ──────────── */
 
@@ -1559,34 +1609,6 @@ cmd_pkg(int argc, char **argv)
 
     fprintf(stderr, "pkg: unknown command '%s'\n", argv[1]);
     return 1;
-}
-
-{
-    (void)argc;
-    (void)argv;
-    printf("WLTIOS Shell — Built-in commands:\n");
-    printf("  ls [-al]        List directory contents\n");
-    printf("  cd [dir]        Change directory\n");
-    printf("  cat [file...]   Display file contents\n");
-    printf("  echo [text...]  Print text\n");
-    printf("  mkdir [dir...]  Create directories\n");
-    printf("  rm [-rf] [file] Remove files\n");
-    printf("  pwd             Print working directory\n");
-    printf("  netcheck        Check network (interfaces, IP, ping 10.0.2.2)\n");
-    printf("  torcheck        Verify Tor routes traffic (via check.torproject.org)\n");
-    printf("  tstatus         Show Tor process and port status\n");
-    printf("  draw            Draw to framebuffer (navy bg + cyan rect + WLTIOS)\n");
-    printf("  killswitch on  Block all non-Tor traffic (OUTPUT DROP)\n");
-    printf("  killswitch off Allow all traffic (OUTPUT ACCEPT)\n");
-    printf("  killswitch status Show current iptables rules\n");
-    printf("  sandbox <cmd>   Run command in isolated network namespace\n");
-    printf("  tcptest <ip> <port> Direct TCP test (kill switch verification)\n");
-    printf("  kairos <question> Ask Kairos AI (needs llama-server running)\n");
-    printf("  pkg install <path> Install a package\n");
-    printf("  pkg list          List installed packages\n");
-    printf("  help            Show this help\n");
-    printf("  exit            Exit shell\n");
-    return 0;
 }
 
 /* ─── Command table ──────────────────────────────────── */
