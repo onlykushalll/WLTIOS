@@ -1,0 +1,5 @@
+61acc1a [release] D+E+G: bootable package (16.7MB) + integration test suite + build scripts
+d61c0c5 [verify] Phase 5: ALL features verified in QEMU serial output + VLM screenshot
+88fc866 [gui] B: wlt-filemanager Wayland two-panel directory browser
+b221b4f [docs] Phase 4 final: update MASTER_CONTEXT + hello-wlt package + pkg install
+dd89dbd [docs+test] D+E+F+G: pkg tests + seL4 analysis + LUKS design + terminal/kairos/luks tests
