@@ -30,6 +30,8 @@
 #include <limits.h>
 #include <linux/fb.h>
 #include <sched.h>
+/* Kairos tool use support */
+#include <stdio.h>
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 
 #define WLT_SHELL_MAX_INPUT 1024
@@ -1448,6 +1450,25 @@ cmd_kairos(int argc, char **argv)
         {
             *content_end = '\0';
             printf("\n  Kairos: %s\n\n", content_start);
+    /* Check if response contains a tool call */
+    char *tool_start = strstr(content_start, "run_command");
+    if (tool_start) {
+        /* Extract command from tool call */
+        char cmd_buf[256] = {0};
+        char *cmd_begin = strstr(tool_start, "\"command\":\"");
+        if (cmd_begin) {
+            cmd_begin += 11;
+            char *cmd_end = strchr(cmd_begin, '\');
+            if (cmd_end) {
+                size_t clen = cmd_end - cmd_begin;
+                if (clen < 255) { memcpy(cmd_buf, cmd_begin, clen); cmd_buf[clen] = 0; }
+                printf("  [Kairos tool] run_command: %s\n", cmd_buf);
+                char tool_output[1024];
+                kairos_run_command(cmd_buf, tool_output, sizeof(tool_output));
+                printf("  [Tool output] %.200s\n", tool_output);
+            }
+        }
+    }
             printf("=== Kairos Response Complete ===\n");
             return 0;
         }
