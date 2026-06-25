@@ -1,0 +1,7 @@
+name = "hello-wlt"
+version = "1.0.0"
+arch = "amd64"
+description = "Hello World for WLTIOS package manager"
+depends = []
+sha256 = "4b2dd4dad78791b83a9e24d845071c4d21f712c876d953b412f68955cbca2af9"
+ed25519_sig = "placeholder"

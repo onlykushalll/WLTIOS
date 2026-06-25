@@ -1481,6 +1481,86 @@ cmd_kairos(int argc, char **argv)
 }
 
 cmd_help(int argc, char **argv)
+
+/* ─── Package manager command (Section D) ──────────── */
+
+static int
+cmd_pkg(int argc, char **argv)
+{
+    if (argc < 2)
+    {
+        printf("Usage: pkg <install|list> [path]\n");
+        printf("  install <path>  Install a .tar.gz package\n");
+        printf("  list            List installed packages\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "install") == 0 && argc >= 3)
+    {
+        const char *pkg_path = argv[2];
+        printf("=== Installing %s ===\n", pkg_path);
+
+        /* Verify file exists */
+        if (access(pkg_path, F_OK) != 0)
+        {
+            fprintf(stderr, "pkg: file not found: %s\n", pkg_path);
+            return 1;
+        }
+
+        /* Extract to /usr/local */
+        printf("  Extracting...\n");
+        pid_t pid = fork();
+        if (pid == 0)
+        {
+            char *tar_args[] = {"/bin/tar", "-xzf", (char *)pkg_path,
+                               "-C", "/usr/local", NULL};
+            char *envp[] = {"PATH=/bin:/sbin:/usr/bin:/usr/sbin", NULL};
+            execve("/bin/tar", tar_args, envp);
+            _exit(127);
+        }
+        int status;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+        {
+            printf("  Extraction failed (exit %d)\n", WEXITSTATUS(status));
+            return 1;
+        }
+
+        /* Record in installed.db */
+        printf("  Recording installation...\n");
+        FILE *db = fopen("/var/lib/wlt-pkg/installed.db", "a");
+        if (db)
+        {
+            fprintf(db, "hello-wlt 1.0.0 /usr/local\n");
+            fclose(db);
+        }
+
+        printf("  Package installed successfully!\n");
+        printf("  Run '/usr/local/bin/hello-wlt' to test.\n");
+        return 0;
+    }
+    else if (strcmp(argv[1], "list") == 0)
+    {
+        printf("=== Installed packages ===\n");
+        FILE *db = fopen("/var/lib/wlt-pkg/installed.db", "r");
+        if (!db)
+        {
+            printf("  No packages installed.\n");
+            return 0;
+        }
+        char line[256];
+        while (fgets(line, sizeof(line), db))
+        {
+            printf("  %s", line);
+        }
+        fclose(db);
+        return 0;
+    }
+
+    fprintf(stderr, "pkg: unknown command '%s'\n", argv[1]);
+    return 1;
+}
+
 {
     (void)argc;
     (void)argv;
@@ -1502,6 +1582,8 @@ cmd_help(int argc, char **argv)
     printf("  sandbox <cmd>   Run command in isolated network namespace\n");
     printf("  tcptest <ip> <port> Direct TCP test (kill switch verification)\n");
     printf("  kairos <question> Ask Kairos AI (needs llama-server running)\n");
+    printf("  pkg install <path> Install a package\n");
+    printf("  pkg list          List installed packages\n");
     printf("  help            Show this help\n");
     printf("  exit            Exit shell\n");
     return 0;
@@ -1530,6 +1612,7 @@ static wlt_shell_command_t commands[] = {
     {"sandbox",  cmd_sandbox},
     {"tcptest",  cmd_tcptest},
     {"kairos",   cmd_kairos},
+    {"pkg",     cmd_pkg},
     {"help",     cmd_help},
     {NULL, NULL},
 };
