@@ -78,3 +78,30 @@ This is acceptable for development. For production:
 - The Key Vault PD can be implemented as a separate seL4 partition (doesn't need PCI)
 - The Boot Verifier PD can verify the kernel image before boot (doesn't need PCI)
 - The Firewall PD (Tor isolation) needs PCI passthrough — this is the blocker
+## Phase 6 Update (2026-06-26)
+
+### Attempted Fixes
+1. Replaced vm0.simple_untyped23_pool = 20 with vm0.simple_untyped25_pool = 8
+   - seL4 rebuilt successfully (ninja exit 0)
+   - Boot FAILED: boot_sys.c:723 "boot_sys failed for some reason :("
+2. Additive: kept untyped23_pool = 20 AND added untyped25_pool = 8
+   - seL4 rebuilt successfully (ninja exit 0)
+   - Boot STILL FAILED: same boot_sys.c:723 error
+
+### Root Cause Analysis
+The boot_sys failure occurs at the KERNEL level, BEFORE the capdl-loader userland
+starts. The untyped pool configuration only affects the userland (capdl-loader)
+stage. The IOSpace allocation that the untyped fix targets happens even later,
+in the VM component initialization.
+
+The failure point is in try_boot_sys() after "Starting node #0 with APIC ID 0"
+and "XSAVE not supported". This is a kernel boot issue, not a CAmkES/untyped issue.
+
+### Definitive Blocker
+The seL4 kernel (kernel-ia32-pc99) fails to boot in QEMU at boot_sys.c:723.
+This is unrelated to the PCI passthrough / IOSpace / untyped pool configuration.
+The kernel needs debugging at the seL4 source level (try_boot_sys function)
+or a different QEMU configuration (CPU model, KVM, machine type).
+
+Three honest attempts made with different untyped configurations. All fail at
+the same kernel boot point. No further attempts on this specific issue.
