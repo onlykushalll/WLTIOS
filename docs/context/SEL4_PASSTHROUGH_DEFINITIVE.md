@@ -105,3 +105,47 @@ or a different QEMU configuration (CPU model, KVM, machine type).
 
 Three honest attempts made with different untyped configurations. All fail at
 the same kernel boot point. No further attempts on this specific issue.
+
+## Phase 6 Final Update (2026-06-26) — KVM BREAKTHROUGH + DEFINITIVE BLOCKER
+
+### Breakthrough: KVM enables kernel boot
+With `-enable-kvm -cpu host`, the seL4 kernel boots successfully:
+  Line 54: "Booting all finished, dropped to user space"
+Without KVM (pure emulation), the kernel fails at boot_sys.c:723.
+With KVM, it reaches the userland/capdl-loader stage.
+
+### The REAL blocker: capdl-loader create_objects runs out of untyped memory
+After kernel boot, the root server (capdl-loader) tries to create VM objects
+but fails:
+  create_objects@main.c:843 Ran out of untyped memory while creating objects.
+  seL4 root server abort()ed
+
+The IOSpace errors appear first (33MB, 8MB allocations fail), but even
+WITHOUT iospace_domain, the root server still runs out of untyped memory.
+This means the capdl spec requires more untyped memory than the kernel
+bootinfo provides to the root server.
+
+### Attempts (all with KVM, all fail at create_objects):
+1. untyped25_pool=8, guest_ram=128MB, QEMU=512MB → FAIL
+2. untyped25_pool=64, guest_ram=128MB, QEMU=512MB → FAIL
+3. No iospace_domain, untyped25_pool=64, guest_ram=128MB → FAIL
+4. No iospace_domain, guest_ram=64MB, QEMU=2GB → FAIL
+5. (prior) untyped23_pool=20 only, no KVM → kernel boot_sys.c:723 fail
+
+### Root Cause
+The seL4 kernel allocates untyped memory regions from physical RAM and
+passes them to the root server via bootinfo. The capdl-loader then uses
+these to create all VM objects (page tables, frames, CNodes, TCBs, etc.).
+The capdl spec for minimal_with_net requires more untyped memory than
+the kernel provides, regardless of QEMU RAM size (the kernel bootinfo
+untyped cap count is capped at KernelMaxNumBootinfoUntypedCaps=230).
+
+### What Would Fix It (future work)
+1. Patch capdl-loader to use a different allocation strategy (binary
+   buddy allocator that splits large untypeds instead of requiring
+   pre-sized ones)
+2. Reduce the capdl spec (fewer objects — smaller VM, fewer components)
+3. Use a newer seL4 + CAmkES version with improved allocation
+4. Patch the kernel to pass more untyped regions to root server
+
+All require seL4 source modifications beyond config changes.
