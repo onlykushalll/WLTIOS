@@ -1340,9 +1340,59 @@ cmd_tcptest(int argc, char **argv)
  */
 
 /* Real implementation: run a shell command, return output */
+
+/* ─── Safety: Command denylist (ported from kairos_mcp.c) ───────────── */
+
+static const char *KAIROS_DANGEROUS_COMMANDS[] = {
+    "rm -rf /", "rm -rf /*", "mkfs", "dd if=", "shutdown",
+    "reboot", "halt", "init 0", "init 6", ":(){:|:&};:",
+    "chmod -R 777 /", "chown -R", "kill -9 1", "kill -9 -1",
+    "wget http", "curl http | sh", "curl http | bash",
+    ">/dev/sda", ">/dev/hda", ">/dev/nvme",
+    "mkfs.ext", "mkfs.btrfs", "mkfs.xfs",
+    "fdisk", "parted", "wipefs",
+    "dd of=/dev/", "shred /", "shred -",
+    ":(){", "fork bomb",
+    "nc -l -p", "nc -ll", "reverse shell",
+    "chmod 777", "chmod 666 /etc",
+    "iptables -F", "iptables -X",  /* don't let AI wipe firewall */
+    "ip route del default",  /* don't let AI kill the network */
+    NULL
+};
+
+static int kairos_is_dangerous_command(const char *cmd)
+{
+    /* Check against denylist */
+    for (int i = 0; KAIROS_DANGEROUS_COMMANDS[i] != NULL; i++)
+    {
+        if (strstr(cmd, KAIROS_DANGEROUS_COMMANDS[i]) != NULL)
+            return 1;
+    }
+    return 0;
+}
+
+/* Real implementation: run a shell command, return output.
+ * SECURITY: commands are checked against a denylist before execution.
+ * Dangerous commands are refused and logged. */
 static int kairos_run_command(const char *cmd, char *output, size_t outlen) {
     if (!cmd || !output || outlen == 0) return -1;
     output[0] = 0;
+
+    /* Security: check denylist */
+    if (kairos_is_dangerous_command(cmd)) {
+        snprintf(output, outlen,
+            "[BLOCKED: command matched denylist — not executed]");
+        fprintf(stderr, "[Kairos SECURITY] Blocked dangerous command: %s\n", cmd);
+        return -1;
+    }
+
+    /* Security: limit command length */
+    if (strlen(cmd) > 512) {
+        snprintf(output, outlen, "[BLOCKED: command too long (%zu > 512)]", strlen(cmd));
+        fprintf(stderr, "[Kairos SECURITY] Blocked oversized command\n");
+        return -1;
+    }
+
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         snprintf(output, outlen, "[command failed: %s]", strerror(errno));
@@ -1634,6 +1684,7 @@ cmd_kairos(int argc, char **argv)
     printf("=== Kairos response complete ===\n");
     return 0;
 }
+
 
 
 static int
