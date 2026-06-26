@@ -1338,11 +1338,22 @@ cmd_tcptest(int argc, char **argv)
  * Usage: kairos <your question>
  * Example: kairos hello
  */
-/* Stub: kairos_run_command - not linked in minimal build */
+
+/* Real implementation: run a shell command, return output */
 static int kairos_run_command(const char *cmd, char *output, size_t outlen) {
-    (void)cmd;
-    snprintf(output, outlen, "[Kairos tool execution not available]");
-    return -1;
+    if (!cmd || !output || outlen == 0) return -1;
+    output[0] = 0;
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        snprintf(output, outlen, "[command failed: %s]", strerror(errno));
+        return -1;
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        strncat(output, line, outlen - strlen(output) - 1);
+    }
+    pclose(fp);
+    return 0;
 }
 
 static int
@@ -1351,14 +1362,14 @@ cmd_kairos(int argc, char **argv)
     if (argc < 2)
     {
         printf("Usage: kairos <question>\n");
-        printf("Ask Kairos, the WLTIOS AI assistant.\n");
-        printf("Example: kairos what is my ip?\n");
+        printf("Ask Kairos, the AI assistant. Uses tools to inspect the system.\n");
+        printf("Example: kairos what files are in /etc?\n");
         return 1;
     }
 
     /* Build the question from argv */
     char question[1024];
-    question[0] = '\0';
+    question[0] = 0;
     for (int i = 1; i < argc; i++)
     {
         if (i > 1) strncat(question, " ", sizeof(question) - strlen(question) - 1);
@@ -1369,47 +1380,51 @@ cmd_kairos(int argc, char **argv)
     printf("  Question: %s\n", question);
     printf("  Connecting to llama-server at 127.0.0.1:8080...\n");
 
-    /* Check if llama-server is running by trying to connect */
+    /* Check if llama-server is running */
     int check_sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (check_sock < 0)
-    {
-        fprintf(stderr, "kairos: socket failed\n");
-        return 1;
-    }
-
+    if (check_sock < 0) { fprintf(stderr, "kairos: socket failed\n"); return 1; }
     struct sockaddr_in srv_addr;
     memset(&srv_addr, 0, sizeof(srv_addr));
     srv_addr.sin_family = AF_INET;
     srv_addr.sin_port = htons(8080);
     inet_pton(AF_INET, "127.0.0.1", &srv_addr.sin_addr);
-
     struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
     setsockopt(check_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(check_sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
     if (connect(check_sock, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) < 0)
     {
         close(check_sock);
         printf("  llama-server not running. Start it with:\n");
         printf("    /usr/bin/llama-server -m /path/to/model.gguf --port 8080 &\n");
-        printf("  (In WSL2: ~/wltios-build/llama.cpp/build/bin/llama-server "
-               "-m ~/wltios-build/kairos-model.gguf --port 8080 &)\n");
         return 1;
     }
     close(check_sock);
 
-    /* Build JSON request body */
-    char json_body[2048];
+    /* System prompt */
+    const char *system_prompt =
+        "You are Kairos, the AI assistant built into WLTIOS operating system. "
+        "WLTIOS routes all traffic through Tor for anonymity. "
+        "You have access to the run_command tool to inspect the system. "
+        "Use the tool when asked about files, processes, network, or system info. "
+        "Be concise. Protect user privacy.";
+
+    /* Build Turn 1 JSON body with tools array */
+    /* The tools JSON is kept simple to avoid escaping issues */
+    char json_body[4096];
     snprintf(json_body, sizeof(json_body),
         "{\"messages\":["
-        "{\"role\":\"system\",\"content\":\"You are Kairos, the AI assistant "
-        "built into WLTIOS operating system. WLTIOS routes all traffic through "
-        "Tor for anonymity. Be concise. Protect the user's privacy.\"},"
+        "{\"role\":\"system\",\"content\":\"%s\"},"
         "{\"role\":\"user\",\"content\":\"%s\"}"
-        "],\"max_tokens\":100}", question);
+        "],\"tools\":[{\"type\":\"function\",\"function\":{"
+        "\"name\":\"run_command\","
+        "\"description\":\"Run a shell command and return output\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"command\":{\"type\":\"string\",\"description\":\"Shell command to run\"}"
+        "},\"required\":[\"command\"]}}}],\"max_tokens\":200}",
+        system_prompt, question);
 
     /* Build HTTP request */
-    char http_request[4096];
+    char http_request[5120];
     snprintf(http_request, sizeof(http_request),
         "POST /v1/chat/completions HTTP/1.1\r\n"
         "Host: 127.0.0.1:8080\r\n"
@@ -1420,30 +1435,23 @@ cmd_kairos(int argc, char **argv)
         "%s",
         strlen(json_body), json_body);
 
-    /* Send request */
+    /* Send Turn 1 request */
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0)
-    {
-        fprintf(stderr, "kairos: socket failed\n");
-        return 1;
-    }
-
+    if (sock < 0) { fprintf(stderr, "kairos: socket failed\n"); return 1; }
     tv.tv_sec = 30;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
     if (connect(sock, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) < 0)
     {
         fprintf(stderr, "kairos: cannot connect to 127.0.0.1:8080\n");
         close(sock);
         return 1;
     }
-
-    printf("  Sending request...\n");
     write(sock, http_request, strlen(http_request));
 
-    /* Read response */
+    /* Read Turn 1 response */
     char response[8192];
+    memset(response, 0, sizeof(response));
     ssize_t total = 0;
     while (total < (ssize_t)sizeof(response) - 1)
     {
@@ -1451,60 +1459,182 @@ cmd_kairos(int argc, char **argv)
         if (n <= 0) break;
         total += n;
     }
-    response[total] = '\0';
+    response[total] = 0;
     close(sock);
 
-    if (total == 0)
+    /* Find JSON body (after HTTP headers) */
+    char *body = strstr(response, "\r\n\r\n");
+    if (!body) body = response;
+    else body += 4;
+
+    /* Check for tool_calls in the response */
+    char *tool_call_pos = strstr(body, "\"tool_calls\"");
+    if (tool_call_pos)
     {
-        fprintf(stderr, "kairos: no response from server\n");
-        return 1;
+        printf("  [Tool call detected]\n");
+
+        /* Extract the command from the arguments field */
+        /* The arguments field is escaped JSON: "arguments":"{\"command\":\"...\"}" */
+        /* Search for "arguments" first to skip the "run_command" function name */
+        char *args_field = strstr(tool_call_pos, "arguments");
+        if (args_field)
+        {
+            /* Find "command" within the arguments value (after the colon) */
+            char *cmd_key = strstr(args_field, "command");
+            if (cmd_key)
+        {
+            /* Skip past "command" to find the value */
+            /* The text may be: "command": "value" or \"command\": \"value\" */
+            char *colon = strchr(cmd_key + 7, ':');
+            if (colon)
+            {
+                colon++;
+                /* Skip whitespace, backslashes, and opening quotes */
+                while (*colon == ' ' || *colon == '\\' || *colon == '"') colon++;
+                /* Read until closing quote (handle \" and " endings) */
+                char cmd_buf[512];
+                int ci = 0;
+                while (colon[ci] && ci < 511)
+                {
+                    /* Stop at unescaped quote */
+                    if (colon[ci] == '"' && colon[ci-1] != '\\') break;
+                    /* Stop at backslash-quote (escaped) */
+                    if (colon[ci] == '\\' && colon[ci+1] == '"') break;
+                    cmd_buf[ci] = colon[ci];
+                    ci++;
+                }
+                cmd_buf[ci] = 0;
+
+                printf("  [Kairos tool] run_command: %s\n", cmd_buf);
+
+                /* Execute the command */
+                char tool_output[2048];
+                kairos_run_command(cmd_buf, tool_output, sizeof(tool_output));
+
+                /* Truncate for display */
+                printf("  [Tool result]: %.300s\n", tool_output);
+
+                /* Turn 2: send tool result back for final answer */
+                /* Build the conversation with tool result */
+                char json_body2[6144];
+                snprintf(json_body2, sizeof(json_body2),
+                    "{\"messages\":["
+                    "{\"role\":\"system\",\"content\":\"%s\"},"
+                    "{\"role\":\"user\",\"content\":\"%s\"},"
+                    "{\"role\":\"assistant\",\"content\":null,"
+                    "\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\","
+                    "\"function\":{\"name\":\"run_command\","
+                    "\"arguments\":\"{\\\"command\\\": \\\"%s\\\"}\"}}]},"
+                    "{\"role\":\"tool\",\"tool_call_id\":\"call_1\","
+                    "\"content\":\"%s\"}"
+                    "],\"max_tokens\":200}",
+                    system_prompt, question, cmd_buf, tool_output);
+
+                char http_req2[7168];
+                snprintf(http_req2, sizeof(http_req2),
+                    "POST /v1/chat/completions HTTP/1.1\r\n"
+                    "Host: 127.0.0.1:8080\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: %zu\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    "%s",
+                    strlen(json_body2), json_body2);
+
+                int sock2 = socket(AF_INET, SOCK_STREAM, 0);
+                if (sock2 < 0)
+                {
+                    printf("  [Turn 2 socket failed — showing tool result only]\n");
+                    printf("  Kairos: (tool executed, result: %s)\n", tool_output);
+                    printf("=== Kairos response complete ===\n");
+                    return 0;
+                }
+                tv.tv_sec = 30;
+                setsockopt(sock2, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                setsockopt(sock2, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+                if (connect(sock2, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) < 0)
+                {
+                    printf("  [Turn 2 connect failed]\n");
+                    close(sock2);
+                    printf("  Kairos: (tool executed, result: %s)\n", tool_output);
+                    printf("=== Kairos response complete ===\n");
+                    return 0;
+                }
+                write(sock2, http_req2, strlen(http_req2));
+
+                char response2[8192];
+                memset(response2, 0, sizeof(response2));
+                total = 0;
+                while (total < (ssize_t)sizeof(response2) - 1)
+                {
+                    ssize_t n = read(sock2, response2 + total, sizeof(response2) - 1 - total);
+                    if (n <= 0) break;
+                    total += n;
+                }
+                response2[total] = 0;
+                close(sock2);
+
+                char *body2 = strstr(response2, "\r\n\r\n");
+                if (!body2) body2 = response2;
+                else body2 += 4;
+
+                /* Extract content from Turn 2 response */
+                char *content_start = strstr(body2, "\"content\":\"");
+                if (content_start)
+                {
+                    content_start += 11;
+                    /* Find end: look for "," or "} */
+                    char *content_end = strstr(content_start, "\",");
+                    if (!content_end) content_end = strchr(content_start, '"');
+                    if (content_end)
+                    {
+                        printf("  Kairos: %.*s\n",
+                            (int)(content_end - content_start), content_start);
+                    }
+                    else
+                    {
+                        printf("  Kairos: %s\n", content_start);
+                    }
+                }
+                else
+                {
+                    printf("  [No final text response — tool result was: %s]\n",
+                           tool_output);
+                }
+                printf("=== Kairos response complete ===\n");
+                return 0;
+            }
+        }
+        }
+        printf("  [Tool call detected but command not parsed]\n");
+        printf("  Raw: %.500s\n", body);
     }
 
-    /* Find the JSON body (skip HTTP headers) */
-    char *body = strstr(response, "\r\n\r\n");
-    if (body) body += 4;
-    else body = response;
-
-    /* Extract content from JSON: find "content":"..." */
+    /* No tool_calls — extract content directly */
     char *content_start = strstr(body, "\"content\":\"");
     if (content_start)
     {
-        content_start += 11;  /* skip "content":" */
-        char *content_end = strstr(content_start, "\"}");
-        if (!content_end) content_end = strstr(content_start, "\",");
+        content_start += 11;
+        char *content_end = strstr(content_start, "\",");
+        if (!content_end) content_end = strstr(content_start, "\"}");
         if (content_end)
         {
-            *content_end = '\0';
-            printf("\n  Kairos: %s\n\n", content_start);
-    /* Check if response contains a tool call */
-    char *tool_start = strstr(content_start, "run_command");
-    if (tool_start) {
-        /* Extract command from tool call */
-        char cmd_buf[256] = {0};
-        char *cmd_begin = strstr(tool_start, "\"command\":\"");
-        if (cmd_begin) {
-            cmd_begin += 11;
-            char *cmd_end = strchr(cmd_begin, '"');
-            if (cmd_end) {
-                size_t clen = cmd_end - cmd_begin;
-                if (clen < 255) { memcpy(cmd_buf, cmd_begin, clen); cmd_buf[clen] = 0; }
-                printf("  [Kairos tool] run_command: %s\n", cmd_buf);
-                char tool_output[1024];
-                kairos_run_command(cmd_buf, tool_output, sizeof(tool_output));
-                printf("  [Tool output] %.200s\n", tool_output);
-            }
+            printf("  Kairos: %.*s\n",
+                (int)(content_end - content_start), content_start);
+        }
+        else
+        {
+            printf("  Kairos: %s\n", content_start);
         }
     }
-            printf("=== Kairos Response Complete ===\n");
-            return 0;
-        }
+    else
+    {
+        printf("  Raw response: %.500s\n", body);
     }
-
-    /* If we can't parse, show raw response */
-    printf("  Raw response: %.200s\n", body);
-    printf("=== Kairos response (unparsed) ===\n");
+    printf("=== Kairos response complete ===\n");
     return 0;
 }
+
 
 static int
 cmd_help(int argc, char **argv)
