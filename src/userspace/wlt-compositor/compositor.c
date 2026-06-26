@@ -27,6 +27,8 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_shm.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/render/pixman.h>
 
@@ -81,6 +83,8 @@ wlt_comp_init(wlt_comp_state_t *state)
     state->wl_allocator = allocator;
 
     struct wlr_scene *scene = wlr_scene_create();
+    wlr_compositor_create(display, 4, renderer);
+    wlr_shm_create_with_renderer(display, 1, renderer);
     if (scene == NULL) {
         wl_display_destroy(display);
         return WLT_COMP_ERR_NOMEM;

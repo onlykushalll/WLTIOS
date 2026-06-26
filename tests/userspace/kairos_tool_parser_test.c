@@ -58,21 +58,19 @@ static int parse_tool_call(const char *json, char *name, int name_len,
         i++;
     }
 
-    /* Find "command" in the arguments (after name) */
-    const char *cmd_pos = strstr(tc, "command");
+    /* Find "arguments" first, then "command" within the arguments value */
+    const char *args_pos = strstr(tc, "arguments");
+    if (!args_pos) return -1;
+    /* Find "command" after arguments — search for the escaped form \"command\" */
+    const char *cmd_pos = strstr(args_pos, "command");
     if (!cmd_pos) return -1;
     val = strchr(cmd_pos + 7, ':');
     if (!val) return -1;
     val++;
     while (*val == ' ' || *val == '"' || *val == '\\') val++;
+    /* Copy to command buffer directly */
     i = 0;
-    while (val[i] && val[i] != '"' && i < cmd_len - 1) {
-        name[i] = val[i];  /* bug: should be command[i] — but we test the parser */
-        i++;
-    }
-    /* Actually copy to command */
-    i = 0;
-    while (val[i] && val[i] != '"' && i < cmd_len - 1) {
+    while (val[i] && val[i] != '"' && val[i] != '\\' && i < cmd_len - 1) {
         command[i] = val[i];
         i++;
     }
@@ -105,6 +103,7 @@ int main(void) {
         char command[256];
         parse_tool_call(mock_response, name, sizeof(name),
                         command, sizeof(command));
+        printf("  (debug) extracted command = '%s'\n", command);
         ASSERT(strcmp(command, "ls /etc") == 0);
     }
 
