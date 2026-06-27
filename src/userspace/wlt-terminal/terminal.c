@@ -73,6 +73,7 @@ char grid[ROWS][COLS];
 int cursor_col = 0;
 int cursor_row = 0;
 char input_buf[MAX_INPUT];
+int surface_configured = 0;  /* set to 1 after first xdg_surface.configure */
 int input_len = 0;
 int running = 1;
 
@@ -175,7 +176,8 @@ static void render_terminal(void)
         }
     }
 
-    /* Commit the surface */
+    /* Commit the surface — only after first configure event */
+    if (!surface_configured) return;
     wl_surface_attach(surface, buffer, 0, 0);
     wl_surface_damage(surface, 0, 0, WIN_W, WIN_H);
     wl_surface_commit(surface);
@@ -299,6 +301,14 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xs, uint32_t s
 {
     (void)data;
     xdg_surface_ack_configure(xs, serial);
+    if (!surface_configured)
+    {
+        surface_configured = 1;
+        term_print("WLTIOS Terminal v1.0\n");
+        term_print("Type 'help' for commands.\n\n");
+        term_print("/wlt# ");
+        render_terminal();
+    }
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -424,7 +434,7 @@ static const struct wl_keyboard_listener keyboard_listener = {
 /* ─── SHM buffer creation ──────────────────────────── */
 static struct wl_buffer *create_buffer(void)
 {
-    char template[] = "/run/wlt-term-shm-XXXXXX";
+    char template[] = "/tmp/wlt-term-shm-XXXXXX";
     shm_fd = mkostemp(template, O_CLOEXEC);
     if (shm_fd < 0) return NULL;
     unlink(template);
@@ -485,12 +495,8 @@ int main(void)
         return 1;
     }
 
-    /* Initialize terminal display */
+    /* Initialize terminal display — actual render deferred to xdg_surface.configure */
     memset(grid, 0, sizeof(grid));
-    term_print("WLTIOS Terminal v1.0\n");
-    term_print("Type 'help' for commands.\n\n");
-    term_print("/wlt# ");
-    render_terminal();
 
     /* Setup keyboard */
     if (keyboard)
