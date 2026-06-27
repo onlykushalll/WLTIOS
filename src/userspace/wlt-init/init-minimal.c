@@ -259,6 +259,51 @@ int main(void)
     }
 
     /* Tor — start in background BEFORE shell */
+    /* WLTIOS Defender — boot order: watchdog=PID2, guardian=PID3, tor=PID4 */
+    /* Start guardian watchdog first (monitors heartbeat, triggers kill switch) */
+    if (access("/usr/sbin/wlt-guardian-watchdog", X_OK) == 0)
+    {
+        pid_t wdpid = fork();
+        if (wdpid == 0)
+        {
+            char *wdargs[] = {"/usr/sbin/wlt-guardian-watchdog", NULL};
+            char *wdenvp[] = {"PATH=/bin:/sbin:/usr/bin:/usr/sbin", NULL};
+            execve("/usr/sbin/wlt-guardian-watchdog", wdargs, wdenvp);
+            _exit(1);
+        }
+        print_str("[wlt-init] Guardian watchdog started\r\n");
+        usleep(200000);
+    }
+
+    /* Start guardian daemon (PID 3) — needs network for Tor UID detection */
+    if (access("/usr/sbin/wlt-guardian", X_OK) == 0)
+    {
+        print_str("[wlt-init] Starting Defender (guardian)...\r\n");
+        pid_t gpid = fork();
+        if (gpid == 0)
+        {
+            char *gargs[] = {"/usr/sbin/wlt-guardian", "--config",
+                             "/etc/wlt/guardian/guardian.conf", NULL};
+            char *genvp[] = {"PATH=/bin:/sbin:/usr/bin:/usr/sbin", NULL};
+            execve("/usr/sbin/wlt-guardian", gargs, genvp);
+            write(1, "[wlt-init] Defender exec failed\r\n", 33);
+            _exit(1);
+        }
+        else if (gpid > 0)
+        {
+            char gmsg[80];
+            int gn = snprintf(gmsg, sizeof(gmsg),
+                "[wlt-init] Defender started (pid=%d)\r\n", (int)gpid);
+            write(1, gmsg, gn > 0 ? gn : 0);
+            usleep(500000);
+        }
+    }
+    else
+    {
+        print_str("[wlt-init] Defender not found (binary missing)\r\n");
+    }
+
+    /* THEN start Tor — guardian detects tor's UID at init */
     print_str("[wlt-init] Starting Tor...");
     pid_t tor_pid = start_tor_background();
     if (tor_pid > 0)

