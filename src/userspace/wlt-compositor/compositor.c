@@ -113,6 +113,8 @@ wlt_comp_init(wlt_comp_state_t *state)
         return WLT_COMP_ERR_NOMEM;
     }
     state->wl_seat = seat;
+    /* Advertise keyboard capability so clients can get keyboard input */
+    wlr_seat_set_capabilities(seat, WL_SEAT_CAPABILITY_KEYBOARD | WL_SEAT_CAPABILITY_POINTER);
 
     /* XDG shell — allows clients to create real windows */
     struct wlr_xdg_shell *xdg_shell = wlr_xdg_shell_create(display, 3);
