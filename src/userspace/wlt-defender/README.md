@@ -1,89 +1,110 @@
-# WLTIOS Guardian
+# WLTIOS Guardian — Defender-Class Endpoint Protection
 
-A Defender-style endpoint protection engine for WLTIOS (seL4 + Linux guest).
+A minimal, amnesic, eBPF-native endpoint protection engine built for the WLTIOS
+security OS. Defender-style layered architecture without the cloud dependency.
 
-**Philosophy:** deterministic code + tiny classical ML catches 95% of threats
-in milliseconds at ~100–170 MB RAM. No always-on LLM. An optional on-demand
-consultant (Qwythos-9B) can be invoked manually for the 1-in-1000 novel case.
-
-## Architecture (5 layers + enforcement)
+## Architecture
 
 ```
-TIER 0 — RAW EVENT STREAM (code, no AI)        ~0 CPU
-  eBPF probes (bpf/) + FIM inotify + audit
-  → signature match (instant) | threshold (flag) | anomaly> X (flag)
-        │  flagged events only
-        ▼
-LAYER 1 — YARA SIGNATURES        sig_engine.c    millisecond
-LAYER 2 — eBPF BEHAVIORAL RULES  bpf/*.bpf.c     real-time
-LAYER 3 — FILE INTEGRITY (FIM)   fim.c           SHA-256 chain
-LAYER 4 — ANOMALY ML             ml/anomaly.py   isolation forest (~20 MB)
-LAYER 5 — NETWORK IDS            (phase 2)
-        │
-        ▼
-ENFORCEMENT TIER                 enforce.c
-  reversible (freeze/quarantine/block-net) → autonomous
-  irreversible (kill/delete/kill-switch)   → HUMAN CONFIRM REQUIRED
-        │
-        ▼
-TAMPER-EVIDENT LOG               guardian.c      chain-hashed, append-only
+ALWAYS-ON CORE (~120 MB, deterministic + small ML)
+  Layer 1: YARA signature engine         (sig_engine.c)      millisecond
+  Layer 2: eBPF behavioral rules         (ebpf_engine.c + bpf/guardian.bpf.c)  real-time, inline kill
+  Layer 3: File integrity monitor        (fim_engine.c)      SHA-256 + sqlite3
+  Layer 4: Anomaly ML (isolation forest) (anomaly_engine.c + iforest.c)  native C, no Python
+  Layer 5: Network IDS                   (net_engine.c)      Tor-focused
+  + Canary engine                        (canary_engine.c)   ransomware detection
+  + Ransomware behavior                  (ransomware_engine.c)  rate-based
+  + PMU hardware counters                (pmu_engine.c)      side-channel + miner detection
+  Enforcement: tiered action layer       (action_engine.c)   reversible=auto, irreversible=confirm
+  Policy: threat→action mapping          (policy_engine.c)   deterministic
+  Forensic log: SHA-256 chain + AES-GCM  (forensic_log.c)    tamper-evident
 ```
 
-## Project layout
+## The 14+ BPF syscall hooks (inline enforcement)
 
-```
-guardian/
-├── activate.sh          # source this to set up the toolchain env
-├── Makefile             # make {bpf|sigs|guardian|ml|all|test|clean}
-├── include/guardian.h   # common types, event bus API
-├── bpf/                 # eBPF behavioral-rule programs (.bpf.c → .bpf.o)
-│   └── trace_execve.bpf.c
-├── src/                 # the daemon (C)
-│   ├── guardian.c       # main, event bus, tamper-evident log
-│   ├── sig_engine.c     # YARA Layer 1
-│   ├── fim.c            # File Integrity Layer 3 (custom, replaces AIDE)
-│   └── enforce.c        # enforcement tier policy
-├── ml/anomaly.py        # isolation-forest anomaly model (Layer 4)
-├── rules/guardian.yar   # YARA signature rules
-├── mcp/mcp_server.py    # deep-kernel MCP (~50 tools, JSON-RPC)
-├── docs/DEV_ENV.md      # what's installed, what runs here vs target
-└── tests/
-```
+Each hook can fire `bpf_send_signal(SIGKILL)` — the process dies BEFORE the
+syscall returns. The attacker never completes the malicious action.
 
-## Quick start
+| Hook | Syscall | What it blocks |
+|---|---|---|
+| 1 | execve | blocklist match |
+| 2 | execveat | blocklist match (fd-relative) |
+| 3 | openat | /etc/shadow, /proc/kcore, /dev/mem (non-root) |
+| 4 | openat2 | same, newer variant |
+| 5 | connect | non-Tor egress (IPv4 + IPv6) |
+| 6 | ptrace | process injection |
+| 7 | clone | fork bombs (<10ms between forks) |
+| 8 | clone3 | same, newer variant |
+| 9 | unshare | CLONE_NEWUSER namespace escape |
+| 10 | setns | namespace enter |
+| 11 | bind | unexpected listeners |
+| 12 | socket | AF_PACKET/SOCK_RAW creation |
+| 13 | setuid | non-root setuid(0) privesc |
+| 14 | capset | non-root capability changes |
+| 15 | sched_process_exit | cleanup fork_last map |
+| 16 | ioctl | SIOCADDRT kill-switch reversal block |
+| 17 | rtnl_newroute | kprobe route addition block |
+| 18 | write | bytes-written counter (anomaly feature) |
+| 19-21 | unlink/unlinkat | ransomware bulk-delete counter |
+| 22-25 | rename/renameat/renameat2 | ransomware rename-storm counter |
+| 26 | sched_process_fork | ancestry map (IOA parent tracking) |
+
+**Phase 4.1 BPF LSM hooks** (5 additional, gated behind `GUARDIAN_MINIMAL_VMLINUX`):
+`lsm/bprm_check_security`, `lsm/file_open`, `lsm/socket_connect`,
+`lsm/inode_unlink`, `lsm/ptrace_access_check` — decision BEFORE syscall
+completes, no SIGKILL race window.
+
+## Build
 
 ```bash
-cd /home/z/guardian
+cd guardian
 source activate.sh          # sets up clang/libbpf/yara env
-make all                    # build everything
+make all                    # rebuild everything from source
+make test                   # run integration tests
 ./build/guardian --self-test
 ```
 
-## What works in this dev sandbox vs WLTIOS target
+### On the WLTIOS target
 
-| Capability            | Dev sandbox           | WLTIOS target |
-|-----------------------|-----------------------|---------------|
-| Compile eBPF programs | ✅                    | ✅            |
-| Load/attach eBPF      | ❌ (no CAP_BPF)       | ✅            |
-| YARA scan             | ✅                    | ✅            |
-| FIM                   | ✅ (limited paths)    | ✅            |
-| Anomaly ML (train)    | ✅                    | ✅            |
-| Enforcement actions   | simulated (no root)   | ✅            |
-| vmlinux.h generation  | ❌ (needs bpftool)    | ✅ (on target)|
+1. Generate vmlinux.h: `bpftool btf dump file /sys/kernel/btf/vmlinux format c > include/vmlinux.h`
+2. Replace `#include "guardian_vmlinux.h"` with `#include "vmlinux.h"` in `bpf/guardian.bpf.c`
+3. Build statically: `make all CC=gcc DAEMON_LDFLAGS="-static ..."`
+4. See `wlt-integration/README.md` for boot order + initramfs bundling
 
-See `docs/DEV_ENV.md` for the full inventory.
+## Self-test
 
-## RAM budget (target)
+The self-test verifies **feature correctness, not just compile correctness**:
+- Canary restart (no false positives after daemon restart)
+- Isolation Forest inference (anomalous > normal, 4 assertions)
+- Ransomware rate-based detection (rate not cumulative)
 
-- Idle (all 5 layers running): ~100–170 MB
-- During incident (Qwythos spins up): +6 GB, then spins back down to 0
-- <4 GB RAM targets: Qwen2.5-1.5B as consultant fallback, or pure Defender-style (no AI)
+Each test was regression-verified: temporarily reverting the fix confirms the
+test fails (the tests have teeth).
 
-## Decisions locked in
+## RAM budget
 
-- **Defender-style core**, not LLM-first. The LLM is an optional consultant.
-- **VibeThinker dropped** — not trained for tool-calling; wrong role for security.
-- **Custom FIM** instead of AIDE (AIDE pulls too many deps for a minimal OS).
-- **eBPF** for behavioral rules (no kernel modules — critical for WLTIOS).
-- **Hybrid signatures**: frozen baseline on USB + Tor-fetched fresh rules.
-- **Irreversible actions require human confirm** (architectural anti-hallucination).
+- Idle: ~120 MB (core engine)
+- During investigation: +6 GB (if Qwythos consultant spins up — on-demand only)
+- After investigation: back to ~120 MB
+
+## Documentation
+
+- `docs/RESEARCH_BRIEF.md` — 12-topic deep research (Defender, Falco, Tetragon, libbpf, AIDE, seL4, Intel PT, TPM, isolation forest, Tor IDS, MCP)
+- `docs/THREAT_MODEL.md` — 5-layer bypass analysis + residual risks
+- `docs/MEMORY_SAFETY_AUDIT.md` — per-file audit, no critical vulns
+- `docs/RACE_AUDIT.md` — lock-ordering analysis (Bug 8 fix prevents ABBA deadlock)
+- `docs/TPM_KEY_SEALING.md` — TPM PCR-bound key derivation plan
+- `docs/adr/09-guardian.md` — Defender-style decision rationale
+- `wlt-integration/README.md` — WLTIOS integration handoff (boot order, initramfs, kill switch)
+
+## License
+
+See `LICENSE` file. Source-available, dual-license for evaluation and WLTIOS integration.
+
+## Threat model
+
+Guardian is purpose-built for WLTIOS — a minimal, amnesic, Tor-only OS where
+the threat model is **targeted surveillance**, not mass malware. For that
+specific threat model, eBPF inline enforcement + a network kill switch +
+tamper-evident amnesic logging + signed updates over Tor + zero cloud
+dependency is the right architecture.
