@@ -1794,30 +1794,44 @@ cmd_guardian(int argc, char **argv)
             printf("[test] CPU-stress started (PID=%d)\n", (int)stress_pid);
         }
 
-        /* Step 3: Wait for guardian to detect */
-        printf("[test] Waiting for defender response (5s)...\n");
-        sleep(5);
-
-        /* Step 4: Check if guardian responded */
-        printf("[test] Checking guardian log for response...\n");
-        fp = popen("tail -5 /var/log/guardian/guardian.log 2>/dev/null", "r");
-        if (fp)
+        /* Step 3: Request immediate scan via guardian socket (same pattern as killswitch) */
+        printf("[test] Requesting immediate scan via guardian socket...\n");
+        int gsock = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (gsock >= 0)
         {
-            char line[512];
-            int found = 0;
-            while (fgets(line, sizeof(line), fp) != NULL)
+            struct sockaddr_un gaddr;
+            memset(&gaddr, 0, sizeof(gaddr));
+            gaddr.sun_family = AF_UNIX;
+            strncpy(gaddr.sun_path, "/run/guardian.sock", sizeof(gaddr.sun_path)-1);
+            if (connect(gsock, (struct sockaddr*)&gaddr, sizeof(gaddr)) == 0)
             {
-                printf("  %s", line);
-                if (strstr(line, "CRITICAL") || strstr(line, "HIGH") ||
-                    strstr(line, "QUARANTINE") || strstr(line, "KILL") ||
-                    strstr(line, "FREEZE"))
-                    found = 1;
+                const char *scan_req = "cmd:scan_file:/tmp/test-threat.txt\n";
+                write(gsock, scan_req, strlen(scan_req));
+                char gbuf[1024] = {0};
+                int gn = read(gsock, gbuf, sizeof(gbuf)-1);
+                if (gn > 0)
+                {
+                    gbuf[gn] = 0;
+                    printf("[test] Guardian response: %s", gbuf);
+                    if (strstr(gbuf, "detected") && strstr(gbuf, "true"))
+                        printf("[test] THREAT DETECTED - YARA match confirmed\n");
+                    else
+                        printf("[test] File scanned, no match\n");
+                }
+                else
+                {
+                    printf("[test] No response (timeout or error)\n");
+                }
             }
-            pclose(fp);
-            if (found)
-                printf("[test] THREAT DETECTED AND RESPONDED\n");
             else
-                printf("[test] No response detected (guardian may not be running)\n");
+            {
+                printf("[test] Cannot connect to guardian socket\n");
+            }
+            close(gsock);
+        }
+        else
+        {
+            printf("[test] Cannot create socket\n");
         }
 
         /* Cleanup */

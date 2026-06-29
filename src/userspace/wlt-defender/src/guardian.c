@@ -417,6 +417,40 @@ int g_api_socket_poll(int timeout_ms, g_sig_engine_t *se) {
                                  (int)target_pid, scan_rc, g_verdict_str(ev.verdict), ev.rule_id, esc_detail);
                         write(c, resp, strlen(resp));
                     }
+
+                fprintf(stderr, "[guardian] scan_file command received\n");
+                if (strncmp(req, "cmd:scan_file:", 14) == 0) {
+                    char fpath[G_PATH_MAX];
+                    snprintf(fpath, sizeof(fpath), "%s", req + 14);
+                    char *nl = strchr(fpath, '\n');
+                    if (nl) *nl = 0;
+                    char resp[2048];
+                    if (!se) {
+                        snprintf(resp, sizeof(resp), "{\"error\":\"sig engine not initialized\"}\n");
+                        write(c, resp, strlen(resp));
+                    } else {
+                        g_event_t ev;
+                        int scan_rc = g_sig_scan_file(se, fpath, &ev);
+                        char esc_detail[1200] = {0};
+                        json_escape(ev.detail, esc_detail, sizeof(esc_detail));
+                        if (scan_rc > 0) {
+                            g_strlcpy(ev.source, "sig", G_SOURCE_MAX);
+                            ev.severity = G_SEV_HIGH;
+                            g_bus_publish(&ev);
+                            snprintf(resp, sizeof(resp),
+                                     "{\"path\":\"%s\",\"rc\":%d,\"verdict\":\"%s\",\"rule_id\":\"%s\",\"detected\":true}\n",
+                                     fpath, scan_rc, g_verdict_str(ev.verdict), ev.rule_id);
+                        } else {
+                            snprintf(resp, sizeof(resp),
+                                     "{\"path\":\"%s\",\"rc\":%d,\"detected\":false}\n",
+                                     fpath, scan_rc);
+                        }
+                        write(c, resp, strlen(resp));
+                    }
+                    close(c);
+                    return 1;
+                }
+
                     close(c);
                     return 1;
                 }
