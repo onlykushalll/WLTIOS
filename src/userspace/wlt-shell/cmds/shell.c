@@ -1075,6 +1075,7 @@ static int wlt_add_default_route(const char *gw) {
 }
 
 /* Kill switch - iptables primary, route-based fallback */
+/* Kill switch — unified through guardian socket, falls back to direct route manipulation */
 static int
 cmd_killswitch(int argc, char **argv)
 {
@@ -1082,36 +1083,40 @@ cmd_killswitch(int argc, char **argv)
         printf("Usage: killswitch <on|off|status>\n");
         return 1;
     }
-    const char *LOADER = "/lib/ld-musl-i386.so.1";
-    const char *IPTABLES = "/usr/sbin/iptables";
-    int have_ipt = (access(LOADER, X_OK) == 0 && access(IPTABLES, X_OK) == 0);
-    if (strcmp(argv[1], "on") == 0) {
-        printf("=== Activating Kill Switch ===\n");
-        int ipt_ok = 0;
-        if (have_ipt) {
-            const char *c0[] = { LOADER, "--library-path", "/lib", IPTABLES, "-F", NULL };
-            const char *c1[] = { LOADER, "--library-path", "/lib", IPTABLES, "-P", "OUTPUT", "DROP", NULL };
-            const char *c2[] = { LOADER, "--library-path", "/lib", IPTABLES, "-A", "OUTPUT", "-d", "127.0.0.1", "-j", "ACCEPT", NULL };
-            const char *c3[] = { LOADER, "--library-path", "/lib", IPTABLES, "-A", "OUTPUT", "-d", "10.0.2.2", "-j", "ACCEPT", NULL };
-            const char **cmds[] = { c0, c1, c2, c3 };
-            int ok = 0;
-            for (int i = 0; i < 4; i++) {
-                pid_t pid = fork();
-                if (pid == 0) { execv(LOADER, (char **)cmds[i]); _exit(127); }
-                int st; waitpid(pid, &st, 0);
-                if (WIFEXITED(st) && WEXITSTATUS(st) == 0) ok++;
-                else printf("  rule %d: exit %d\n", i, WIFEXITED(st)?WEXITSTATUS(st):-1);
+
+    const char *action = argv[1];
+
+    /* Try guardian socket first (single kill-switch authority) */
+    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s >= 0) {
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, "/run/guardian.sock", sizeof(addr.sun_path)-1);
+        if (connect(s, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+            /* Guardian is running — delegate to it */
+            char cmd[64];
+            snprintf(cmd, sizeof(cmd), "cmd:kill_switch:%s\n", action);
+            write(s, cmd, strlen(cmd));
+            char buf[512] = {0};
+            int n = read(s, buf, sizeof(buf)-1);
+            if (n > 0) {
+                buf[n] = 0;
+                printf("%s", buf);
+            } else {
+                printf("[killswitch] Guardian accepted command (no response)\n");
             }
-            ipt_ok = (ok >= 2);
-        }
-        if (ipt_ok) {
-            printf("  OUTPUT policy: DROP\n");
-            printf("  Allowed: 127.0.0.1 (Tor), 10.0.2.2 (gw)\n");
-            printf("=== Kill Switch ACTIVE - non-Tor blocked ===\n");
+            close(s);
             return 0;
         }
-        printf("  iptables unavailable (no ip_tables module).\n");
-        printf("  Fallback: route-based panic kill switch...\n");
+        close(s);
+    }
+
+    /* Guardian not running — fall back to direct route manipulation */
+    printf("[killswitch] Guardian not available, using direct route fallback\n");
+
+    if (strcmp(action, "on") == 0) {
+        printf("=== Activating Kill Switch (fallback) ===\n");
         char gw[32];
         if (wlt_get_default_gw(gw, sizeof(gw)) != 0) {
             FILE *mf = fopen("/run/wlt-killswitch", "w");
@@ -1123,45 +1128,30 @@ cmd_killswitch(int argc, char **argv)
         if (gf) { fprintf(gf, "route:%s\n", gw); fclose(gf); }
         if (wlt_delete_default_route() == 0) {
             printf("  Default route deleted (was via %s)\n", gw);
-            printf("=== Kill Switch ACTIVE (route-based panic) ===\n");
+            printf("=== Kill Switch ACTIVE (route-based fallback) ===\n");
             return 0;
         }
         printf("=== Kill Switch FAILED ===\n");
         return 1;
-    } else if (strcmp(argv[1], "off") == 0) {
-        printf("=== Deactivating Kill Switch ===\n");
-        int did_route = 0;
+    } else if (strcmp(action, "off") == 0) {
+        printf("=== Deactivating Kill Switch (fallback) ===\n");
         FILE *gf = fopen("/run/wlt-killswitch", "r");
         if (gf) {
             char line[64];
             if (fgets(line, sizeof(line), gf)) {
                 line[strcspn(line, "\n")] = 0;
                 if (strncmp(line, "route:", 6) == 0) {
-                    const char *gw = line + 6; did_route = 1;
+                    const char *gw = line + 6;
                     if (strcmp(gw, "none") != 0 && wlt_add_default_route(gw) == 0)
                         printf("  Route restored (via %s)\n", gw);
                 }
             }
             fclose(gf); unlink("/run/wlt-killswitch");
         }
-        if (have_ipt) {
-            char *a1[] = { (char *)LOADER, "--library-path", "/lib", (char *)IPTABLES, "-F", NULL };
-            char *a2[] = { (char *)LOADER, "--library-path", "/lib", (char *)IPTABLES, "-P", "OUTPUT", "ACCEPT", NULL };
-            pid_t pid; int st;
-            pid = fork(); if (pid==0) { execv(LOADER, a1); _exit(127); } waitpid(pid, &st, 0);
-            pid = fork(); if (pid==0) { execv(LOADER, a2); _exit(127); } waitpid(pid, &st, 0);
-            printf("  OUTPUT policy: ACCEPT\n");
-        }
-        if (!did_route && !have_ipt) printf("  (no kill switch was active)\n");
         printf("=== Kill Switch OFF - all traffic allowed ===\n");
         return 0;
-    } else if (strcmp(argv[1], "status") == 0) {
-        printf("=== iptables rules ===\n");
-        if (have_ipt) {
-            char *a[] = { (char *)LOADER, "--library-path", "/lib", (char *)IPTABLES, "-L", "-n", NULL };
-            pid_t pid = fork(); if (pid==0) { execv(LOADER, a); _exit(127); }
-            int st; waitpid(pid, &st, 0);
-        } else printf("  iptables unavailable\n");
+    } else if (strcmp(action, "status") == 0) {
+        printf("=== Kill Switch Status (fallback) ===\n");
         printf("=== Routing table ===\n");
         FILE *rf = fopen("/proc/net/route", "r");
         if (rf) { char l[256]; while (fgets(l,sizeof(l),rf)) printf("  %s", l); fclose(rf); }
@@ -1170,7 +1160,7 @@ cmd_killswitch(int argc, char **argv)
         else printf("=== Kill switch: not active ===\n");
         return 0;
     }
-    fprintf(stderr, "killswitch: unknown argument '%s'\n", argv[1]);
+    fprintf(stderr, "killswitch: unknown argument '%s'\n", action);
     return 1;
 }
 
