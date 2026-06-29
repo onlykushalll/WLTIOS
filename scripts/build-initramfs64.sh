@@ -77,6 +77,28 @@ cp "$BUILD_DIR/wlt-shell" "$OUT_DIR/bin/wlt-shell"
 cp "$BUILD_DIR/wlt-net" "$OUT_DIR/sbin/wlt-net"
 cp "$BUILD_DIR/wlt-crypto" "$OUT_DIR/sbin/wlt-crypto"
 
+# === WLTIOS Defender (Guardian) bundle ===
+echo "=== Installing Guardian Defender ===" >> $LOG
+GUARDIAN_SRC="${WLTIOS_SRC}/userspace/wlt-defender"
+if [ -d "$GUARDIAN_SRC" ] && [ -x "$GUARDIAN_SRC/build/guardian" ]; then
+    INITRAMFS_DIR="$OUT_DIR" GUARDIAN_SRC="$GUARDIAN_SRC" \
+        bash "$GUARDIAN_SRC/wlt-integration/build-initramfs-snippet.sh" 2>> $LOG
+    echo "guardian bundle: $?" >> $LOG
+
+    # Copy shared libs (guardian is dynamically linked)
+    mkdir -p "$OUT_DIR/etc/wlt/guardian/lib"
+    cp -f "$GUARDIAN_SRC/local-deps/usr/lib/x86_64-linux-gnu/libyara.so"* "$OUT_DIR/etc/wlt/guardian/lib/" 2>/dev/null || true
+    cp -f "$GUARDIAN_SRC/local-deps/usr/lib/x86_64-linux-gnu/libbpf.so"* "$OUT_DIR/etc/wlt/guardian/lib/" 2>/dev/null || true
+    cp -f "$GUARDIAN_SRC/local-deps/usr/lib/x86_64-linux-gnu/libelf.so"* "$OUT_DIR/etc/wlt/guardian/lib/" 2>/dev/null || true
+    cp -f "$GUARDIAN_SRC/local-deps/usr/lib/x86_64-linux-gnu/libcrypto.so"* "$OUT_DIR/etc/wlt/guardian/lib/" 2>/dev/null || true
+    cp -f "$GUARDIAN_SRC/local-deps/usr/lib/x86_64-linux-gnu/libsqlite3.so"* "$OUT_DIR/etc/wlt/guardian/lib/" 2>/dev/null || true
+    cp -f "$GUARDIAN_SRC/local-deps/usr/lib/x86_64-linux-gnu/libzstd.so"* "$OUT_DIR/etc/wlt/guardian/lib/" 2>/dev/null || true
+    cp -f "$GUARDIAN_SRC/local-deps/usr/lib/x86_64-linux-gnu/libjitterentropy.so"* "$OUT_DIR/etc/wlt/guardian/lib/" 2>/dev/null || true
+    echo "guardian shared libs: $?" >> $LOG
+else
+    echo "guardian: source or binary not found, skipping" >> $LOG
+fi
+
 # Standard files
 echo '#!/bin/sh' > "$OUT_DIR/init"; echo 'exec /sbin/init' >> "$OUT_DIR/init"; chmod 755 "$OUT_DIR/init"
 echo "WLTIOS_VERSION=0.1.0" > "$OUT_DIR/etc/wltios-release"

@@ -282,8 +282,7 @@ int main(void)
         pid_t gpid = fork();
         if (gpid == 0)
         {
-            char *gargs[] = {"/usr/sbin/wlt-guardian", "--config",
-                             "/etc/wlt/guardian/guardian.conf", NULL};
+            char *gargs[] = {"/usr/sbin/wlt-guardian", "/etc/wlt/guardian/guardian.conf", NULL};
             char *genvp[] = {"PATH=/bin:/sbin:/usr/bin:/usr/sbin", NULL};
             execve("/usr/sbin/wlt-guardian", gargs, genvp);
             write(1, "[wlt-init] Defender exec failed\r\n", 33);
