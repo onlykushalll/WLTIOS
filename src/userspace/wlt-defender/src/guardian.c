@@ -417,8 +417,10 @@ int g_api_socket_poll(int timeout_ms, g_sig_engine_t *se) {
                                  (int)target_pid, scan_rc, g_verdict_str(ev.verdict), ev.rule_id, esc_detail);
                         write(c, resp, strlen(resp));
                     }
+                    close(c);
+                    return 1;
+                }
 
-                fprintf(stderr, "[guardian] scan_file command received\n");
                 if (strncmp(req, "cmd:scan_file:", 14) == 0) {
                     char fpath[G_PATH_MAX];
                     snprintf(fpath, sizeof(fpath), "%s", req + 14);
@@ -447,10 +449,6 @@ int g_api_socket_poll(int timeout_ms, g_sig_engine_t *se) {
                         }
                         write(c, resp, strlen(resp));
                     }
-                    close(c);
-                    return 1;
-                }
-
                     close(c);
                     return 1;
                 }
