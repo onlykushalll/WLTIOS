@@ -1,0 +1,9 @@
+/sbin/init
+/bin/wlt-shell
+/usr/bin/wlt-compositor
+/usr/bin/tor
+/etc/tor/torrc
+/etc/wltios-release
+/usr/sbin/wlt-guardian
+/etc/wlt/guardian/guardian.conf
+/etc/wlt/guardian/guardian.policy

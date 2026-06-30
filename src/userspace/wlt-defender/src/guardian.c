@@ -1214,6 +1214,23 @@ int g_daemon_run(const g_config_t *cfg) {
             return -1;
         }
         printf("[guardian] FIM engine: ready (encrypted=%d)\n", FIM_encrypted);
+        /* Build FIM baseline from paths file */
+        {
+            char fim_paths[G_PATH_MAX];
+            snprintf(fim_paths, sizeof(fim_paths), "%s.paths", cfg->fim_db_path);
+            if (access(fim_paths, R_OK) != 0) {
+                snprintf(fim_paths, sizeof(fim_paths), "/etc/wlt/guardian/fim.paths");
+            }
+            if (access(fim_paths, R_OK) != 0) {
+                g_strlcpy(fim_paths, "rules/fim.paths", sizeof(fim_paths));
+            }
+            if (access(fim_paths, R_OK) == 0) {
+                int n_baseline = g_fim_build_baseline(fe, fim_paths);
+                printf("[guardian] FIM baseline: %d files hashed from %s\n", n_baseline, fim_paths);
+            } else {
+                printf("[guardian] FIM baseline: no paths file found, starting empty\n");
+            }
+        }
     }
 
     if (cfg->enable_ml) {
