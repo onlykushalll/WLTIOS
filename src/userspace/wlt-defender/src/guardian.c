@@ -393,9 +393,24 @@ int g_api_socket_poll(int timeout_ms, g_sig_engine_t *se) {
                 }
 
                 if (strstr(req, "cmd:kill_switch")) {
-                    int kill_rc = g_action_kill_switch();
+                    /* Parse on/off from cmd:kill_switch:<action> */
+                    int kill_rc;
+                    char ks_action[16] = "on";
+                    char *ks_arg = strchr(req + strlen("cmd:kill_switch"), ':');
+                    if (ks_arg) {
+                        ks_arg++;
+                        char *nl = strchr(ks_arg, '\n');
+                        if (nl) *nl = 0;
+                        snprintf(ks_action, sizeof(ks_action), "%s", ks_arg);
+                    }
+                    if (strcmp(ks_action, "off") == 0) {
+                        /* Deactivate kill switch: restore default route */
+                        kill_rc = g_action_kill_switch_deactivate();
+                    } else {
+                        kill_rc = g_action_kill_switch();
+                    }
                     char ok_resp[256];
-                    snprintf(ok_resp, sizeof(ok_resp), "{\"status\":\"ok\",\"action\":\"kill_switch\",\"rc\":%d}\n", kill_rc);
+                    snprintf(ok_resp, sizeof(ok_resp), "{\"status\":\"ok\",\"action\":\"kill_switch_%s\",\"rc\":%d}\n", ks_action, kill_rc);
                     write(c, ok_resp, strlen(ok_resp));
                     close(c);
                     return 1;

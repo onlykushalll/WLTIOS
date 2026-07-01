@@ -333,6 +333,50 @@ int g_action_kill_switch(void) {
     return 0;
 }
 
+/* Deactivate kill switch — restore default route */
+int g_action_kill_switch_deactivate(void) {
+    /* Read saved gateway from /run/wlt-killswitch marker */
+    FILE *f = fopen("/run/wlt-killswitch", "r");
+    if (!f) {
+        return -1;
+    }
+    char line[128];
+    if (!fgets(line, sizeof(line), f)) {
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    unlink("/run/wlt-killswitch");
+
+    /* Parse gateway from "route:X.X.X.X" format */
+    if (strncmp(line, "route:", 6) != 0) {
+        return -1;
+    }
+    char *gw = line + 6;
+    char *nl = strchr(gw, '\n');
+    if (nl) *nl = 0;
+    if (strcmp(gw, "none") == 0) {
+        return 0;  /* was already routeless */
+    }
+
+    /* Restore default route via SIOCADDRT */
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    struct rtentry rt;
+    memset(&rt, 0, sizeof(rt));
+    rt.rt_dst.sa_family = AF_INET;
+    ((struct sockaddr_in *)&rt.rt_dst)->sin_addr.s_addr = INADDR_ANY;
+    rt.rt_genmask.sa_family = AF_INET;
+    ((struct sockaddr_in *)&rt.rt_genmask)->sin_addr.s_addr = INADDR_ANY;
+    rt.rt_gateway.sa_family = AF_INET;
+    inet_aton(gw, &((struct sockaddr_in *)&rt.rt_gateway)->sin_addr);
+    rt.rt_flags = RTF_UP | RTF_GATEWAY;
+    int ret = ioctl(fd, SIOCADDRT, &rt);
+    close(fd);
+    return ret;
+}
+
+
 /* ---- apply action from an event ---- */
 int g_action_apply(const g_event_t *ev) {
     if (!ev) return -EINVAL;

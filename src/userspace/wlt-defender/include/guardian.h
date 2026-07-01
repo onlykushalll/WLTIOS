@@ -327,6 +327,7 @@ int  g_action_block_net(pid_t pid);
 int  g_action_kill(pid_t pid, bool take_snapshot);
 int  g_action_delete(const char *path);
 int  g_action_kill_switch(void);
+int  g_action_kill_switch_deactivate(void);
 
 /* ============================================================ *
  *  Policy engine (threat→action mapping, deterministic)       *

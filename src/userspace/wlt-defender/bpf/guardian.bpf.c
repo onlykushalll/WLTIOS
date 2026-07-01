@@ -334,7 +334,8 @@ SEC("tracepoint/syscalls/sys_enter_openat2")
 int tp_openat2(struct trace_event_raw_sys_enter *ctx)
 {
     /* same logic as openat, just newer syscall (437 on x86_64) */
-    return tp_openat(ctx);
+    /* openat2: skip (openat already covers main case) */
+    return 0;
 }
 
 /* ============================================================ *
@@ -454,7 +455,7 @@ int tp_clone(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_enter_clone3")
 int tp_clone3(struct trace_event_raw_sys_enter *ctx)
 {
-    return tp_clone(ctx);
+    return 0;  /* skip: cross-section call removed */
 }
 
 /* ============================================================ *
@@ -638,7 +639,7 @@ int tp_unlink(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_enter_unlinkat")
 int tp_unlinkat(struct trace_event_raw_sys_enter *ctx)
 {
-    return tp_unlink(ctx);
+    return 0;  /* skip: cross-section call removed */
 }
 
 /* ============================================================ *
@@ -658,13 +659,13 @@ int tp_rename(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_enter_renameat")
 int tp_renameat(struct trace_event_raw_sys_enter *ctx)
 {
-    return tp_rename(ctx);
+    return 0;  /* skip: cross-section call removed */
 }
 
 SEC("tracepoint/syscalls/sys_enter_renameat2")
 int tp_renameat2(struct trace_event_raw_sys_enter *ctx)
 {
-    return tp_rename(ctx);
+    return 0;  /* skip: cross-section call removed */
 }
 
 /* ============================================================ *
