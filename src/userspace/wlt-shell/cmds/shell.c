@@ -1799,6 +1799,9 @@ cmd_guardian(int argc, char **argv)
         int gsock = socket(AF_UNIX, SOCK_STREAM, 0);
         if (gsock >= 0)
         {
+            struct timeval gtv = { .tv_sec = 10, .tv_usec = 0 };
+            setsockopt(gsock, SOL_SOCKET, SO_RCVTIMEO, &gtv, sizeof(gtv));
+            setsockopt(gsock, SOL_SOCKET, SO_SNDTIMEO, &gtv, sizeof(gtv));
             struct sockaddr_un gaddr;
             memset(&gaddr, 0, sizeof(gaddr));
             gaddr.sun_family = AF_UNIX;

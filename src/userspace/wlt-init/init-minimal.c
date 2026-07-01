@@ -176,6 +176,18 @@ int main(void)
     print_str("[wlt-init] Mounting filesystems... OK");
     print_str("[wlt-init] Amnesic mode: all writes in RAM (tmpfs)");
 
+    /* Mount tracefs for eBPF tracepoint attach (Guardian BPF hooks) */
+    mkdir("/sys/kernel", 0755);
+    mkdir("/sys/kernel/tracing", 0755);
+    if (mount("tracefs", "/sys/kernel/tracing", "tracefs", 0, NULL) == 0)
+        print_str("[wlt-init] tracefs mounted (BPF tracepoints ready)");
+    else
+        print_str("[wlt-init] tracefs mount failed (non-fatal)");
+
+    /* Mount debugfs (some kernels expose tracepoints here) */
+    mkdir("/sys/kernel/debug", 0755);
+    mount("debugfs", "/sys/kernel/debug", "debugfs", 0, NULL);
+
     /* Framebuffer init — set /dev/fb0 to 1366x768x32 for QEMU -vga std.
      * This must happen before any rendering commands (draw, compositor). */
     {
