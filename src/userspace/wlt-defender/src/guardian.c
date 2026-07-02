@@ -1335,10 +1335,22 @@ int g_daemon_run(const g_config_t *cfg) {
     uint64_t g_canary_post_swap_alerts_start = 0;
     double g_pre_swap_alert_rate = 0.0;
 
+    int _loop_cnt = 0;
     while (g_running) {
+        _loop_cnt++;
+        if (_loop_cnt % 10 == 0) fprintf(stderr, "[dbg] loop iteration %d\n", _loop_cnt);
+        struct timespec _t0, _t1, _t2;
+        clock_gettime(CLOCK_MONOTONIC, &_t0);
         if (ee) g_ebpf_poll(ee, 200);
+        clock_gettime(CLOCK_MONOTONIC, &_t1);
+        long ebpf_ms = (_t1.tv_sec - _t0.tv_sec) * 1000 + (_t1.tv_nsec - _t0.tv_nsec) / 1000000;
+        if (ebpf_ms > 100) fprintf(stderr, "[dbg] ebpf_poll took %ld ms\n", ebpf_ms);
 
+        clock_gettime(CLOCK_MONOTONIC, &_t1);
         g_api_socket_poll(100, se);
+        clock_gettime(CLOCK_MONOTONIC, &_t2);
+        long api_ms = (_t2.tv_sec - _t1.tv_sec) * 1000 + (_t2.tv_nsec - _t1.tv_nsec) / 1000000;
+        if (api_ms > 100) fprintf(stderr, "[dbg] api_socket_poll took %ld ms\n", api_ms);
 
         time_t now = time(NULL);
         if (now - last_heartbeat >= 1) {
@@ -1357,23 +1369,43 @@ int g_daemon_run(const g_config_t *cfg) {
         }
         if (fe && now - last_fim >= cfg->fim_scan_interval_sec) {
             last_fim = now;
+            struct timespec _tf0, _tf1;
+            clock_gettime(CLOCK_MONOTONIC, &_tf0);
             g_fim_scan_all(fe, NULL, NULL);
+            clock_gettime(CLOCK_MONOTONIC, &_tf1);
+            long fim_ms = (_tf1.tv_sec - _tf0.tv_sec) * 1000 + (_tf1.tv_nsec - _tf0.tv_nsec) / 1000000;
+            if (fim_ms > 100) fprintf(stderr, "[dbg] fim_scan took %ld ms\n", fim_ms);
         }
         if (ae && now - last_ml >= cfg->ml_check_interval_sec) {
             last_ml = now;
             /* Bug 16 fix: enumerate all PIDs from /proc and check each, pass signature engine for immediate scanning */
+            struct timespec _ta0, _ta1;
+            clock_gettime(CLOCK_MONOTONIC, &_ta0);
             g_anomaly_check_all_procs(ae, se);
+            clock_gettime(CLOCK_MONOTONIC, &_ta1);
+            long anom_ms = (_ta1.tv_sec - _ta0.tv_sec) * 1000 + (_ta1.tv_nsec - _ta0.tv_nsec) / 1000000;
+            if (anom_ms > 100) fprintf(stderr, "[dbg] anomaly_check took %ld ms\n", anom_ms);
         }
         if (ne && now - last_net >= 5) {
             last_net = now;
             g_event_t nev;
+            struct timespec _tn0, _tn1;
+            clock_gettime(CLOCK_MONOTONIC, &_tn0);
             g_net_check_leak(ne, &nev);
+            clock_gettime(CLOCK_MONOTONIC, &_tn1);
+            long net_ms = (_tn1.tv_sec - _tn0.tv_sec) * 1000 + (_tn1.tv_nsec - _tn0.tv_nsec) / 1000000;
+            if (net_ms > 100) fprintf(stderr, "[dbg] net_check took %ld ms\n", net_ms);
         }
 
         // Periodic process memory scanning
         if (se && cfg->enable_mem_scan && now - last_mem_scan >= cfg->mem_scan_interval_sec) {
             last_mem_scan = now;
+            struct timespec _tm0, _tm1;
+            clock_gettime(CLOCK_MONOTONIC, &_tm0);
             g_sig_scan_all_proc_mem(se);
+            clock_gettime(CLOCK_MONOTONIC, &_tm1);
+            long mem_ms = (_tm1.tv_sec - _tm0.tv_sec) * 1000 + (_tm1.tv_nsec - _tm0.tv_nsec) / 1000000;
+            if (mem_ms > 100) fprintf(stderr, "[dbg] mem_scan took %ld ms\n", mem_ms);
         }
 
         /* Phase 2.1: verify canary files every 30 seconds */

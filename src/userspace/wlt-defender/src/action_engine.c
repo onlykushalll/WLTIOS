@@ -36,6 +36,8 @@ int g_action_init(void) {
 
 /* ---- freeze / thaw (cgroup freezer v1, fallback SIGSTOP) ---- */
 int g_action_freeze(pid_t pid) {
+    /* Never freeze ourselves — prevents self-deadlock */
+    if (pid == getpid()) return 0;
     /* try cgroup freezer v1 */
     char path[256];
     snprintf(path, sizeof(path), "/sys/fs/cgroup/freezer/guardian_%d", pid);

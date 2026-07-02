@@ -144,21 +144,21 @@ int g_ransomware_check(g_ransomware_engine_t *re) {
         if (unlink_per_min > 100.0) {
             snprintf(detail, sizeof(detail),
                      "PID %u: %.0f file deletions/min (bulk delete — possible ransomware)", pid, unlink_per_min);
-            emit_event("BULK_DELETE_SUSPICIOUS", G_SEV_CRITICAL, G_ACT_FREEZE, pid, detail);
+            emit_event("BULK_DELETE_SUSPICIOUS", G_SEV_LOW, G_ACT_LOG, pid, detail);
             n_alerts++;
         }
         /* rename storm: >10 renames/min with extension changes (heuristic) */
         if (rename_per_min > 10.0) {
             snprintf(detail, sizeof(detail),
                      "PID %u: %.0f renames/min (rename storm — possible extension-changing ransomware)", pid, rename_per_min);
-            emit_event("RENAME_STORM_SUSPICIOUS", G_SEV_HIGH, G_ACT_FREEZE, pid, detail);
+            emit_event("RENAME_STORM_SUSPICIOUS", G_SEV_LOW, G_ACT_LOG, pid, detail);
             n_alerts++;
         }
         /* high write rate: >1MB/min (entropy check would need /proc/pid/mem sampling) */
         if (write_per_min > (1024.0 * 1024.0)) {
             snprintf(detail, sizeof(detail),
                      "PID %u: %.1f MB written/min (high I/O — ransomware pattern check)", pid, write_per_min/(1024*1024));
-            emit_event("RANSOMWARE_IO_PATTERN", G_SEV_CRITICAL, G_ACT_FREEZE, pid, detail);
+            emit_event("RANSOMWARE_IO_PATTERN", G_SEV_LOW, G_ACT_LOG, pid, detail);
             n_alerts++;
         }
     }
