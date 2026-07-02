@@ -311,6 +311,31 @@ int g_action_delete(const char *path) {
  * Deletes the default route so no traffic can leave (Tor uses its own
  * socks proxy on localhost, unaffected by route table changes). */
 int g_action_kill_switch(void) {
+    /* Read current default gateway from /proc/net/route and save it */
+    FILE *pf = fopen("/proc/net/route", "r");
+    if (pf) {
+        char line[256];
+        if (!fgets(line, sizeof(line), pf)) { fclose(pf); pf = NULL; } /* skip header */
+        while (pf && fgets(line, sizeof(line), pf)) {
+            char iface[32];
+            unsigned int dest, gw, mask, flags;
+            if (sscanf(line, "%31s %x %x %x %x", iface, &dest, &gw, &mask, &flags) >= 5) {
+                if (dest == 0 && gw != 0) {
+                    struct in_addr addr;
+                    addr.s_addr = gw;
+                    const char *gw_str = inet_ntoa(addr);
+                    FILE *sf = fopen("/run/wlt-killswitch", "w");
+                    if (sf) {
+                        fprintf(sf, "route:%s\n", gw_str);
+                        fclose(sf);
+                    }
+                    break;
+                }
+            }
+        }
+        if (pf) fclose(pf);
+    }
+
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) return -errno;
     struct rtentry rt;
@@ -326,10 +351,8 @@ int g_action_kill_switch(void) {
     int saved = errno;
     close(sock);
     if (rc != 0 && saved != ESRCH) {
-        /* ESRCH = no such route (already deleted) — not an error */
         return -saved;
     }
-    /* Lock down route restoration by activating eBPF reversal block */
     g_ebpf_set_kill_switch_active(true);
     printf("[action] KILL SWITCH ACTIVATED — default route deleted, all non-Tor egress blocked\n");
     return 0;
