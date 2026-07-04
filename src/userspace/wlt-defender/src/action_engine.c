@@ -227,19 +227,57 @@ int g_action_quarantine_proc(pid_t pid) {
 
 /* ---- network block (per-pid) ---- */
 int g_action_block_net(pid_t pid) {
-    /* ideal: cgroup-bpf egress filter. fallback: netfilter rule on pid's conns.
-     * In dev sandbox: just log. On WLTIOS: write to /proc/net/route or use
-     * the existing killswitch route-delete approach for whole-system block. */
+    /* NOT IMPLEMENTED: real per-pid network isolation (a cgroup-bpf egress
+     * filter, or a netfilter rule scoped to this pid's connections) doesn't
+     * exist yet. It needs a BPF program type this codebase doesn't have and
+     * per-process cgroup placement nothing here currently sets up — that's
+     * real design work (comparable in scope to the Key Vault PD — see
+     * G_ACT_ENCRYPT's -ENOSYS below), not a mechanical fix, and shouldn't be
+     * built blind.
+     *
+     * What this function used to do: silently `return 0` (success) while
+     * doing nothing. g_action_quarantine_proc() calls this as the second
+     * half of "quarantine" — freeze() genuinely halts the process (SIGSTOP
+     * means no syscalls, including network I/O, while frozen), so
+     * containment IS real *while frozen*. The gap is specifically: nothing
+     * durable happens for when the process is later thawed — it resumes
+     * with full network access. Making that silent was the actual bug: it
+     * looked like "quarantine" included network isolation when only the
+     * freeze half did anything. This now logs the gap to the forensic trail
+     * instead of hiding it, and still returns 0 so the freeze half of
+     * quarantine isn't reported as a failure — the freeze succeeded; it's
+     * the network half that's not implemented. */
     (void)pid;
     if (!have_root()) return 0;
-    /* TODO: cgroup-bpf program that drops packets from this pid's cgroup */
+
+    g_event_t ev = {0};
+    g_strlcpy(ev.source, "action", sizeof(ev.source));
+    g_strlcpy(ev.rule_id, "BLOCK_NET_NOT_IMPLEMENTED", sizeof(ev.rule_id));
+    ev.pid = (uint32_t)pid;
+    ev.severity = G_SEV_MEDIUM;
+    ev.verdict = G_VERDICT_SUSPICIOUS;
+    ev.action_taken = G_ACT_ALERT;
+    ev.ts_ns = (uint64_t)time(NULL) * 1000000000ULL;
+    ev.seq = g_bus_next_seq();
+    snprintf(ev.detail, sizeof(ev.detail),
+             "Process %d quarantined (frozen) but per-pid network isolation "
+             "is not implemented — network access resumes unrestricted if "
+             "this process is later thawed", (int)pid);
+    g_bus_publish(&ev);
     return 0;
 }
 
 /* ---- kill (with forensic snapshot) — Bug 20 fix: SIGSTOP before snapshot ---- */
 static void take_snapshot(pid_t pid) {
+    /* Fix: apply the same uniquifier fix already made for
+     * g_action_quarantine_file (see Bug 12 fix / M7 fix above) — pid+time()
+     * at 1-second resolution collides if the same pid is snapshotted twice
+     * within one second (repeated kill triggers, rapid respawn), silently
+     * overwriting forensic evidence. Reuse the same atomic counter. */
+    uint64_t seq = __sync_add_and_fetch(&g_quarantine_counter, 1);
     char path[256];
-    snprintf(path, sizeof(path), "/var/quarantine/snapshot_%d_%ld", pid, time(NULL));
+    snprintf(path, sizeof(path), "/var/quarantine/snapshot_%d_%ld_%llu", pid,
+             (long)time(NULL), (unsigned long long)seq);
     mkdir("/var/quarantine", 0755);
     FILE *f = fopen(path, "w");
     if (!f) return;
@@ -353,8 +391,25 @@ int g_action_kill_switch(void) {
     if (rc != 0 && saved != ESRCH) {
         return -saved;
     }
-    g_ebpf_set_kill_switch_active(true);
+    int ebpf_rc = g_ebpf_set_kill_switch_active(true);
     printf("[action] KILL SWITCH ACTIVATED — default route deleted, all non-Tor egress blocked\n");
+    if (ebpf_rc != 0) {
+        printf("[action] WARNING: eBPF kill_switch_active map not set (rc=%d)"
+               " — enforcement is route-level only, not kernel-hook-level\n",
+               ebpf_rc);
+    }
+    g_event_t ev = {0};
+    g_strlcpy(ev.source, "action", sizeof(ev.source));
+    g_strlcpy(ev.rule_id, "KILL_SWITCH_ON", sizeof(ev.rule_id));
+    ev.severity = G_SEV_HIGH;
+    ev.verdict = G_VERDICT_SUSPICIOUS;
+    ev.action_taken = G_ACT_ALERT;
+    ev.ts_ns = (uint64_t)time(NULL) * 1000000000ULL;
+    ev.seq = g_bus_next_seq();
+    snprintf(ev.detail, sizeof(ev.detail),
+             "Kill switch activated: default route deleted%s",
+             ebpf_rc == 0 ? ", eBPF enforcement active" : ", eBPF map update failed");
+    g_bus_publish(&ev);
     return 0;
 }
 
@@ -380,24 +435,57 @@ int g_action_kill_switch_deactivate(void) {
     char *gw = line + 6;
     char *nl = strchr(gw, '\n');
     if (nl) *nl = 0;
-    if (strcmp(gw, "none") == 0) {
-        return 0;  /* was already routeless */
+
+    int ret = 0;
+    if (strcmp(gw, "none") != 0) {
+        /* Restore default route via SIOCADDRT */
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0) {
+            ret = -1;
+        } else {
+            struct rtentry rt;
+            memset(&rt, 0, sizeof(rt));
+            rt.rt_dst.sa_family = AF_INET;
+            ((struct sockaddr_in *)&rt.rt_dst)->sin_addr.s_addr = INADDR_ANY;
+            rt.rt_genmask.sa_family = AF_INET;
+            ((struct sockaddr_in *)&rt.rt_genmask)->sin_addr.s_addr = INADDR_ANY;
+            rt.rt_gateway.sa_family = AF_INET;
+            inet_aton(gw, &((struct sockaddr_in *)&rt.rt_gateway)->sin_addr);
+            rt.rt_flags = RTF_UP | RTF_GATEWAY;
+            ret = ioctl(fd, SIOCADDRT, &rt);
+            close(fd);
+        }
+    }
+    /* else: was already routeless, ret stays 0 */
+
+    /* Fix: this function used to only restore the route and never cleared
+     * the eBPF-level kill_switch_active flag, so any BPF hook consuming that
+     * map stayed in kill-switch-enforcement mode forever, even after a
+     * "successful" deactivate (deactivate returned 0, but nothing at the
+     * kernel-hook level actually changed). Clear it now that the
+     * architecture decision (see g_ebpf_set_kill_switch_active in
+     * ebpf_engine.c) allows userspace to do so. */
+    int ebpf_rc = g_ebpf_set_kill_switch_active(false);
+    if (ebpf_rc != 0) {
+        printf("[action] WARNING: eBPF kill_switch_active map not cleared "
+               "(rc=%d) — route restored but eBPF-level enforcement, if any "
+               "consumes that map, may still be active\n", ebpf_rc);
     }
 
-    /* Restore default route via SIOCADDRT */
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return -1;
-    struct rtentry rt;
-    memset(&rt, 0, sizeof(rt));
-    rt.rt_dst.sa_family = AF_INET;
-    ((struct sockaddr_in *)&rt.rt_dst)->sin_addr.s_addr = INADDR_ANY;
-    rt.rt_genmask.sa_family = AF_INET;
-    ((struct sockaddr_in *)&rt.rt_genmask)->sin_addr.s_addr = INADDR_ANY;
-    rt.rt_gateway.sa_family = AF_INET;
-    inet_aton(gw, &((struct sockaddr_in *)&rt.rt_gateway)->sin_addr);
-    rt.rt_flags = RTF_UP | RTF_GATEWAY;
-    int ret = ioctl(fd, SIOCADDRT, &rt);
-    close(fd);
+    g_event_t ev = {0};
+    g_strlcpy(ev.source, "action", sizeof(ev.source));
+    g_strlcpy(ev.rule_id, "KILL_SWITCH_OFF", sizeof(ev.rule_id));
+    ev.severity = G_SEV_HIGH;
+    ev.verdict = G_VERDICT_SUSPICIOUS;
+    ev.action_taken = G_ACT_ALERT;
+    ev.ts_ns = (uint64_t)time(NULL) * 1000000000ULL;
+    ev.seq = g_bus_next_seq();
+    snprintf(ev.detail, sizeof(ev.detail),
+             "Kill switch deactivated: default route %s%s",
+             (strcmp(gw, "none") == 0) ? "was already absent" : "restored",
+             ebpf_rc == 0 ? ", eBPF flag cleared" : ", eBPF flag clear FAILED");
+    g_bus_publish(&ev);
+
     return ret;
 }
 

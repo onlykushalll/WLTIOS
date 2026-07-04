@@ -33,15 +33,24 @@
 #define MAX_BPF_OBJECTS 16
 #define MAX_EBPF_RULES  64
 
+#define MAX_LINKS_PER_OBJECT 32
+
 struct g_ebpf_object {
     char name[64];
 #ifdef G_HAVE_LIBBPF
     struct bpf_object *obj;
-    struct bpf_link   *link;
+    struct bpf_link   *links[MAX_LINKS_PER_OBJECT]; /* Fix: a single .bpf.o
+        can hold many programs (guardian.bpf.c attaches 23 tracepoints from
+        one object). A scalar `link` field silently dropped the reference to
+        every attach after the first, leaking the bpf_link heap struct + its
+        backing fd for the daemon's lifetime and leaving no way to
+        selectively detach or manage 22 of the 23 attached hooks. */
+    int n_links;
     struct ring_buffer *rb;   /* Bug 7 fix: created once, reused across polls */
 #else
     void *obj;
-    void *link;
+    void *links[MAX_LINKS_PER_OBJECT];
+    int n_links;
     void *rb;
 #endif
     int  n_events;
@@ -217,7 +226,14 @@ static bool eval_condition(const char *cond, const g_event_t *ev) {
         tok = strtok_r(NULL, " ", &saveptr);
     }
 
-    bool result = true;
+    bool result = false;
+    bool have_evaluated = false;  /* Bug fix: `result` used to seed `true`,
+        which is only a valid identity for the AND fold. A condition string
+        that opens with "or" (a malformed rule, but nothing prevented it)
+        read that seed via the OR short-circuit below *before any predicate
+        had run*, matching unconditionally without evaluating a single
+        field. Track whether a real predicate has evaluated yet before
+        trusting `result` for either the short-circuit or the final return. */
     bool is_or = false;
     int i = 0;
     while (i < ntok) {
@@ -228,7 +244,7 @@ static bool eval_condition(const char *cond, const g_event_t *ev) {
         }
         if (!strcmp(tokens[i], "or")) {
             is_or = true;
-            if (result) return true;  /* short-circuit OR */
+            if (have_evaluated && result) return true;  /* short-circuit OR */
             i++;
             continue;
         }
@@ -238,11 +254,16 @@ static bool eval_condition(const char *cond, const g_event_t *ev) {
         char *op = tokens[i+1];
         char *val = tokens[i+2];
         bool m = field_match(field, op, val, ev);
-        result = is_or ? (result || m) : (result && m);
+        result = have_evaluated ? (is_or ? (result || m) : (result && m)) : m;
+        have_evaluated = true;
         is_or = false;
         i += 3;
     }
-    return result;
+    /* Fail-safe: a condition with no real predicates (empty, or malformed —
+     * only and/or tokens, no field/op/val) must not match, not match-
+     * everything. A security rule evaluator should fail closed on garbage
+     * input, not fail open. */
+    return have_evaluated ? result : false;
 }
 
 int g_ebpf_rules_eval(g_ebpf_engine_t *ee, const g_event_t *raw, g_event_t *out) {
@@ -303,9 +324,11 @@ void g_ebpf_free(g_ebpf_engine_t *ee) {
     if (g_ee_global == ee) g_ee_global = NULL;
 #ifdef G_HAVE_LIBBPF
     for (int i = 0; i < ee->n_objs; i++) {
-        if (ee->objs[i].rb)   ring_buffer__free(ee->objs[i].rb);
-        if (ee->objs[i].link) bpf_link__destroy(ee->objs[i].link);
-        if (ee->objs[i].obj)  bpf_object__close(ee->objs[i].obj);
+        if (ee->objs[i].rb) ring_buffer__free(ee->objs[i].rb);
+        for (int j = 0; j < ee->objs[i].n_links; j++) {
+            if (ee->objs[i].links[j]) bpf_link__destroy(ee->objs[i].links[j]);
+        }
+        if (ee->objs[i].obj) bpf_object__close(ee->objs[i].obj);
     }
 #endif
     free(ee);
@@ -350,7 +373,14 @@ int g_ebpf_load_all(g_ebpf_engine_t *ee) {
         bpf_object__for_each_program(prog, obj) {
             struct bpf_link *link = bpf_program__attach(prog);
             if (!libbpf_get_error(link)) {
-                if (!o->link) o->link = link;
+                if (o->n_links < MAX_LINKS_PER_OBJECT) {
+                    o->links[o->n_links++] = link;
+                } else {
+                    fprintf(stderr, "[ebpf] warning: %s program %s attached "
+                            "but MAX_LINKS_PER_OBJECT (%d) exceeded — link "
+                            "leaked, raise the limit\n", de->d_name,
+                            bpf_program__name(prog), MAX_LINKS_PER_OBJECT);
+                }
                 printf("[ebpf] attached %s\n", bpf_program__name(prog));
             }
         }
@@ -412,8 +442,15 @@ static int ringbuf_cb(void *ctx, void *data, size_t sz) {
     ev.verdict = G_VERDICT_UNKNOWN;
 
     if (ev.action_taken == G_ACT_KILL_SWITCH) {
-        /* Minor: explain to the user why Tor is offline now */
-        g_strlcpy(ev.detail, "Non-Tor egress connection leak detected. System kill-switch activated. All default routes deleted. Tor guardian connections also terminated.", sizeof(ev.detail));
+        /* Detail text corrected: the kill switch deletes the default route
+         * only (see g_action_kill_switch in action_engine.c). Tor's own
+         * SOCKS proxy on localhost is explicitly unaffected by a route-table
+         * change — that's the design property that lets Tor keep working
+         * while everything else is cut off. The old text claimed Tor
+         * connections were "also terminated", which didn't match what the
+         * code does and could mislead someone reading this during a real
+         * incident. */
+        g_strlcpy(ev.detail, "Non-Tor egress connection leak detected. System kill-switch activated: default route deleted, all non-Tor outbound traffic blocked. Tor's local SOCKS proxy remains active and unaffected.", sizeof(ev.detail));
     }
 
     ee->n_events_total++;
@@ -519,7 +556,21 @@ int g_ebpf_set_kill_switch_active(bool active) {
     if (!g_ee_global) return -ENODEV;
     uint32_t zero = 0;
     uint32_t val = active ? 1 : 0;
-    /* Design decision: kill_switch_active cannot be cleared by userspace once set */
-    if (!active) return -EINVAL;
+    /* Architecture decision (reviewed, reversing the prior one-way lock):
+     * the kill switch is user-reversible, not one-way. Rationale: WLTIOS's
+     * current userspace has no privilege separation (everything runs as
+     * root, no seL4 partition isolation for this subsystem yet) — an
+     * attacker able to call this via the socket already has equivalent or
+     * greater access (can write this BPF map directly, or kill this daemon
+     * outright). Meanwhile WLTIOS is amnesic by design: a one-way-until-
+     * reboot kill switch means "toggle it off" = "lose your entire session",
+     * which would make people avoid using it as the everyday privacy tool
+     * it's meant to be. The caller (g_action_kill_switch_deactivate) is
+     * root-gated via SO_PEERCRED on the API socket, and every transition is
+     * bus-published to the tamper-evident forensic log — legitimate use
+     * works, illegitimate use leaves an audit trail. That's the best
+     * available property given the privilege model that actually exists
+     * today; revisit once real seL4 partition isolation exists for this
+     * component. */
     return g_ebpf_set_map_value(g_ee_global, "kill_switch_active", &zero, &val);
 }

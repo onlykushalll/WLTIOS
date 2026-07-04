@@ -48,9 +48,13 @@ typedef struct {
 
 static g_rate_bucket_t g_rate_buckets[G_RATE_LIMIT_MAX_BUCKETS];
 static int g_rate_bucket_count = 0;
+static int g_rate_next_write = 0;  /* Fix: separate wrapping write-index —
+    see the eviction site below for why g_rate_bucket_count alone can't
+    serve this purpose once the table fills. */
 
 static g_dedup_entry_t g_dedup_table[G_DEDUP_MAX_ENTRIES];
 static int g_dedup_count = 0;
+static int g_dedup_next_write = 0;  /* Fix: same reasoning, see eviction site. */
 
 static double g_global_tokens = G_GLOBAL_RATE_LIMIT_BURST;
 static uint64_t g_global_last_update_ns = 0;
@@ -139,10 +143,19 @@ int g_bus_publish(const g_event_t *ev) {
             }
         }
         if (!found_dedup) {
-            int idx = g_dedup_count;
-            if (idx >= G_DEDUP_MAX_ENTRIES) {
-                idx = g_dedup_count % G_DEDUP_MAX_ENTRIES;
-            }
+            /* Fix: g_dedup_count freezes at G_DEDUP_MAX_ENTRIES once full —
+             * needed, since it's also the bound for the linear scan above —
+             * but this idx computation reused that same frozen counter for
+             * eviction too, so `idx = count % CAP` became `CAP % CAP = 0`
+             * forever once full. Every eviction after that overwrote slot 0
+             * specifically, not a rotating slot; slots 1..CAP-1 froze
+             * permanently. Self-test can't catch this — every sub-test
+             * resets g_dedup_count to 0 before running, so the table never
+             * actually fills during self-test. Use a separate,
+             * always-incrementing write index for eviction, independent of
+             * the populated-count used for scanning. */
+            int idx = g_dedup_next_write % G_DEDUP_MAX_ENTRIES;
+            g_dedup_next_write++;
             g_strlcpy(g_dedup_table[idx].rule_id, ev->rule_id, sizeof(g_dedup_table[idx].rule_id));
             g_dedup_table[idx].pid = ev->pid;
             g_dedup_table[idx].last_seen_ns = now_ns;
@@ -180,10 +193,13 @@ int g_bus_publish(const g_event_t *ev) {
         }
     }
     if (!bucket) {
-        int idx = g_rate_bucket_count;
-        if (idx >= G_RATE_LIMIT_MAX_BUCKETS) {
-            idx = g_rate_bucket_count % G_RATE_LIMIT_MAX_BUCKETS;
-        }
+        /* Fix: same bug class as the dedup table above — g_rate_bucket_count
+         * freezes at G_RATE_LIMIT_MAX_BUCKETS once full (needed for the
+         * linear scan bound), so reusing it for eviction meant every
+         * eviction after the table filled overwrote slot 0 specifically.
+         * Separate, always-incrementing write index for eviction. */
+        int idx = g_rate_next_write % G_RATE_LIMIT_MAX_BUCKETS;
+        g_rate_next_write++;
         bucket = &g_rate_buckets[idx];
         g_strlcpy(bucket->source, ev->source, sizeof(bucket->source));
         g_strlcpy(bucket->rule_id, ev->rule_id, sizeof(bucket->rule_id));
@@ -354,12 +370,35 @@ int g_api_socket_poll(int timeout_ms, g_sig_engine_t *se) {
     int c = accept(g_api_fd, NULL, NULL);
     if (c < 0) return -errno;
 
-    /* Check if client sent any command */
-    fd_set rfds; FD_ZERO(&rfds); FD_SET(c, &rfds);
-    struct timeval ctv = {0, 5000}; // 5ms timeout
-    int select_rc = select(c + 1, &rfds, NULL, NULL, &ctv);
-    
-    char req[128] = {0};
+    /* Check if client sent any command.
+     * Fix (race): this used to be a single 5ms select() after accept().
+     * That's a race, not a timing budget — connect() returning on the
+     * client side doesn't mean the client's subsequent write() has landed
+     * yet; any intervening work (even a printf before the write) is enough
+     * to lose a 5ms window. The failure mode was non-deterministic:
+     * sometimes the client got the stale default-status response instead
+     * of its actual command's answer, sometimes our close() beat the
+     * client's write() and the client took a SIGPIPE. Retrying in a bounded
+     * loop (up to ~150ms total) covers any realistic same-host
+     * connect-then-write gap while still bounding worst-case added latency,
+     * so a client that never writes anything can't stall the eBPF-polling
+     * side of this event loop. */
+    int select_rc = 0;
+    for (int attempt = 0; attempt < 5; attempt++) {
+        fd_set rfds; FD_ZERO(&rfds); FD_SET(c, &rfds);
+        struct timeval ctv = {0, 30000}; /* 30ms x 5 = 150ms worst case */
+        select_rc = select(c + 1, &rfds, NULL, NULL, &ctv);
+        if (select_rc != 0) break; /* ready, or a real error — stop retrying */
+    }
+
+    /* Fix (truncation): req used to be a fixed 128 bytes regardless of what
+     * G_PATH_MAX allows elsewhere (fpath below is sized to G_PATH_MAX). A
+     * "cmd:scan_file:<path>" command only had ~113 bytes of headroom for
+     * <path> — any legitimate path longer than that was silently cut at the
+     * network-read boundary rather than the boundary the code's own buffer
+     * declarations implied it supported. Tie req's size to G_PATH_MAX so
+     * they can't drift apart again. */
+    char req[G_PATH_MAX + 32] = {0};
     if (select_rc > 0) {
         ssize_t n = read(c, req, sizeof(req) - 1);
         if (n > 0) {
@@ -542,8 +581,12 @@ int g_daemon_self_test(void) {
 
     /* Reset internal rate limiting and deduplication state */
     g_rate_bucket_count = 0;
+    g_rate_next_write = 0;   /* Fix: reset alongside count — see the
+        eviction-site comments in g_bus_publish for why leaving this out of
+        sync with count breaks the invariant the linear scan depends on. */
     memset(g_rate_buckets, 0, sizeof(g_rate_buckets));
     g_dedup_count = 0;
+    g_dedup_next_write = 0;  /* Fix: same reasoning. */
     memset(g_dedup_table, 0, sizeof(g_dedup_table));
     g_global_tokens = G_GLOBAL_RATE_LIMIT_BURST;
     g_global_last_update_ns = get_now_ns();
@@ -582,6 +625,7 @@ int g_daemon_self_test(void) {
 
     /* Reset rate limits for next tests */
     g_rate_bucket_count = 0;
+    g_rate_next_write = 0;   /* Fix: keep in sync with count on every reset */
     memset(g_rate_buckets, 0, sizeof(g_rate_buckets));
     g_global_tokens = G_GLOBAL_RATE_LIMIT_BURST;
     g_global_last_update_ns = get_now_ns();
@@ -602,6 +646,7 @@ int g_daemon_self_test(void) {
 
     /* Reset rate limits */
     g_rate_bucket_count = 0;
+    g_rate_next_write = 0;   /* Fix: keep in sync with count on every reset */
     memset(g_rate_buckets, 0, sizeof(g_rate_buckets));
     g_global_tokens = G_GLOBAL_RATE_LIMIT_BURST;
     g_global_last_update_ns = get_now_ns();
@@ -652,8 +697,10 @@ int g_daemon_self_test(void) {
 
     /* Reset rate limits */
     g_rate_bucket_count = 0;
+    g_rate_next_write = 0;   /* Fix: keep in sync with count on every reset */
     memset(g_rate_buckets, 0, sizeof(g_rate_buckets));
     g_dedup_count = 0;
+    g_dedup_next_write = 0;  /* Fix: same reasoning */
     memset(g_dedup_table, 0, sizeof(g_dedup_table));
     g_global_tokens = G_GLOBAL_RATE_LIMIT_BURST;
 
@@ -732,8 +779,10 @@ int g_daemon_self_test(void) {
 
     /* Reset rate limits */
     g_rate_bucket_count = 0;
+    g_rate_next_write = 0;   /* Fix: keep in sync with count on every reset */
     memset(g_rate_buckets, 0, sizeof(g_rate_buckets));
     g_dedup_count = 0;
+    g_dedup_next_write = 0;  /* Fix: same reasoning */
     memset(g_dedup_table, 0, sizeof(g_dedup_table));
     g_global_tokens = G_GLOBAL_RATE_LIMIT_BURST;
 
@@ -1336,14 +1385,8 @@ int g_daemon_run(const g_config_t *cfg) {
     double g_pre_swap_alert_rate = 0.0;
 
     while (g_running) {
-        struct timespec _t0, _t1, _t2;
-        clock_gettime(CLOCK_MONOTONIC, &_t0);
         if (ee) g_ebpf_poll(ee, 200);
-        clock_gettime(CLOCK_MONOTONIC, &_t1);
-
-        clock_gettime(CLOCK_MONOTONIC, &_t1);
         g_api_socket_poll(100, se);
-        clock_gettime(CLOCK_MONOTONIC, &_t2);
 
         time_t now = time(NULL);
         if (now - last_heartbeat >= 1) {
