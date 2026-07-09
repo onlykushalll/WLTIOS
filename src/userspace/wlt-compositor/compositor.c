@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <unistd.h>
 
 /* Wayland server */
@@ -52,19 +53,37 @@ wlt_comp_init(wlt_comp_state_t *state)
 
     memset(state, 0, sizeof(*state));
 
-    setenv("WLR_BACKENDS", "headless", 1);
-    setenv("WLR_RENDERER", "pixman", 1);
-
     struct wl_display *display = wl_display_create();
     if (display == NULL)
         return WLT_COMP_ERR_BACKEND;
     state->wl_display = display;
 
     struct wl_event_loop *loop = wl_display_get_event_loop(display);
-    struct wlr_backend *backend = wlr_headless_backend_create(loop);
+
+    /* Backend selection: try a real DRM display first, fall back to
+     * headless. Every prior milestone (terminal, filemanager, settings)
+     * has "connected to Wayland" per serial logs but has never actually
+     * been seen — the compositor has only ever initialized headless. */
+    struct wlr_backend *backend = NULL;
+    bool using_drm = false;
+    if (access("/dev/dri/card0", F_OK) == 0) {
+        setenv("WLR_BACKENDS", "drm", 1);
+        backend = wlr_backend_autocreate(loop, NULL);
+        if (backend != NULL) {
+            using_drm = true;
+            fprintf(stderr, "[compositor] DRM backend created (/dev/dri/card0)\n");
+        } else {
+            fprintf(stderr, "[compositor] DRM backend creation failed, falling back to headless\n");
+        }
+    }
     if (backend == NULL) {
-        wl_display_destroy(display);
-        return WLT_COMP_ERR_BACKEND;
+        setenv("WLR_BACKENDS", "headless", 1);
+        setenv("WLR_RENDERER", "pixman", 1);
+        backend = wlr_headless_backend_create(loop);
+        if (backend == NULL) {
+            wl_display_destroy(display);
+            return WLT_COMP_ERR_BACKEND;
+        }
     }
     state->wl_backend = backend;
 
@@ -98,14 +117,24 @@ wlt_comp_init(wlt_comp_state_t *state)
     }
     state->wl_output_layout = output_layout;
 
-    struct wlr_output *output = wlr_headless_add_output(backend, 1366, 768);
-    if (output == NULL) {
-        wl_display_destroy(display);
-        return WLT_COMP_ERR_BACKEND;
+    if (using_drm) {
+        /* DRM outputs are discovered by the backend via hotplug
+         * (wlr_backend.events.new_output). A listener for that isn't wired
+         * yet — this proves DRM backend creation itself works, which is
+         * the gate everything else sits behind. If backend_start succeeds
+         * here but no output ever appears, that's the next concrete gap,
+         * not a reason this step failed. */
+        fprintf(stderr, "[compositor] DRM backend active — outputs arrive via hotplug (listener not yet wired)\n");
+    } else {
+        struct wlr_output *output = wlr_headless_add_output(backend, 1366, 768);
+        if (output == NULL) {
+            wl_display_destroy(display);
+            return WLT_COMP_ERR_BACKEND;
+        }
+        wlr_output_set_name(output, "HEADLESS-1");
+        wlr_output_layout_add_auto(output_layout, output);
+        fprintf(stderr, "[compositor] Output HEADLESS-1 created (1366x768)\n");
     }
-    wlr_output_set_name(output, "HEADLESS-1");
-    wlr_output_layout_add_auto(output_layout, output);
-    fprintf(stderr, "[compositor] Output HEADLESS-1 created (1366x768)\n");
 
     struct wlr_seat *seat = wlr_seat_create(display, "seat0");
     if (seat == NULL) {

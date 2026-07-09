@@ -130,7 +130,7 @@ fi
 echo "=== Installing compositor + wlroots libs ===" >> $LOG
 COMP_DIR="${WLTIOS_SRC}/userspace/wlt-compositor"
 # Rebuild compositor with full paths
-gcc -Wall -Wextra -DWLR_USE_UNSTABLE -I"${COMP_DIR}/include" \
+gcc -Wall -Wextra -DWLR_USE_UNSTABLE -I"${COMP_DIR}" -I"${COMP_DIR}/include" \
     $(pkg-config --cflags wlroots-0.18 wayland-server) \
     "${COMP_DIR}/compositor.c" "${COMP_DIR}/comp_main.c" \
     $(pkg-config --libs wlroots-0.18 wayland-server) \
@@ -145,6 +145,30 @@ if [ -x /tmp/wlt-compositor-test ]; then
     ln -sf /lib64/ld-linux-x86-64.so.2 "$OUT_DIR/lib/ld-linux-x86-64.so.2" 2>/dev/null || true
     LIB_COUNT=$(ls "$OUT_DIR/lib/"*.so* 2>/dev/null | wc -l)
     echo "compositor + $LIB_COUNT libs copied" >> $LOG
+
+    # DRM/Mesa driver: NOT caught by the ldd loop above, because it's loaded
+    # via dlopen() at runtime based on detected hardware, not linked at
+    # compile time. Bundling it explicitly, at the exact path Mesa searches
+    # by default on this system, and also exporting LIBGL_DRIVERS_PATH as a
+    # belt-and-suspenders fallback in case the initramfs's directory layout
+    # doesn't line up with Mesa's compiled-in default search path.
+    echo "=== Installing Mesa DRI driver (dlopen-time, not caught by ldd) ===" >> $LOG
+    mkdir -p "$OUT_DIR/usr/lib/x86_64-linux-gnu/dri"
+    DRIL_REAL=$(readlink -f /usr/lib/x86_64-linux-gnu/dri/virtio_gpu_dri.so 2>/dev/null)
+    if [ -n "$DRIL_REAL" ] && [ -f "$DRIL_REAL" ]; then
+        cp -L "$DRIL_REAL" "$OUT_DIR/usr/lib/x86_64-linux-gnu/dri/libdril_dri.so"
+        for alias in virtio_gpu_dri.so swrast_dri.so kms_swrast_dri.so; do
+            ln -sf libdril_dri.so "$OUT_DIR/usr/lib/x86_64-linux-gnu/dri/$alias"
+        done
+        # libdril_dri.so's own deps (checked directly, not assumed):
+        # libgbm libm libc libdrm libexpat libgcc_s — all already covered
+        # by the ldd loop above except libgcc_s, which wasn't a direct
+        # compositor dependency. Bundle it explicitly too.
+        cp -L /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 "$OUT_DIR/lib/" 2>/dev/null || true
+        echo "libdril_dri.so + aliases installed ($(stat -c%s "$OUT_DIR/usr/lib/x86_64-linux-gnu/dri/libdril_dri.so" 2>/dev/null) bytes)" >> $LOG
+    else
+        echo "WARNING: libdril_dri.so not found on build host — DRM backend will fail to load a GPU driver even if /dev/dri/card0 exists in the guest" >> $LOG
+    fi
 else
     echo "compositor rebuild failed" >> $LOG
 fi
