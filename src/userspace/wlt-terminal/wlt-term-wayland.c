@@ -434,7 +434,7 @@ int main(void) {
     }
     fprintf(stderr, "[wlt-term] PTY spawned (pid=%d)\n", pid);
 
-    /* Launch file manager + status bar as additional Wayland clients */
+    /* Launch file manager + status bar + kairos as additional Wayland clients */
     pid_t fm_pid = fork();
     if (fm_pid == 0) { execl("/usr/bin/wlt-filemanager", "wlt-filemanager", NULL); _exit(127); }
     fprintf(stderr, "[wlt-term] file manager launched (pid=%d)\n", fm_pid);
@@ -442,6 +442,10 @@ int main(void) {
     pid_t bar_pid = fork();
     if (bar_pid == 0) { execl("/usr/bin/wlt-statusbar", "wlt-statusbar", NULL); _exit(127); }
     fprintf(stderr, "[wlt-term] status bar launched (pid=%d)\n", bar_pid);
+
+    pid_t kairos_pid = fork();
+    if (kairos_pid == 0) { execl("/usr/bin/kairos-window", "kairos-window", NULL); _exit(127); }
+    fprintf(stderr, "[wlt-term] kairos window launched (pid=%d)\n", kairos_pid);
 
     /* Main loop: poll PTY + dispatch Wayland */
     struct pollfd pfd = { .fd = master_fd, .events = POLLIN };

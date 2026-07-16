@@ -1,10 +1,18 @@
 /**
  * @file wlt-statusbar.c
- * @brief WLTIOS Status Bar — bottom panel showing real system state
- * @purpose Display Tor status, network, RAM usage — all from verified sources
+ * @brief WLTIOS Status Bar — bottom panel with taskbar + system indicators
+ * @purpose Display running-app list (taskbar) + Tor/net/RAM/uptime
  *
  * A 1280x32 Wayland client pinned to the bottom of the screen.
- * Reads real data:
+ *
+ * Taskbar: scans /proc for known WLTIOS app processes
+ *   (wlt-terminal, wlt-filemanager, wlt-launcher, wlt-settings, kairos).
+ *   Each running app is shown as "[name]" in the middle of the bar —
+ *   the pragmatic path, since the compositor doesn't expose its view
+ *   list via Wayland protocol yet. On a fully-featured shell this would
+ *   use layer-shell + compositor IPC instead.
+ *
+ * System indicators (right side):
  *   - Tor status: /run/tor.pid exists + /proc/<pid>/comm == "tor"
  *   - Network: /sys/class/net/eth0/operstate
  *   - RAM: /proc/meminfo (MemAvailable / MemTotal)
@@ -22,6 +30,8 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
+#include <dirent.h>
+#include <ctype.h>
 #include <sys/mman.h>
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
@@ -131,6 +141,26 @@ static const uint8_t font8x16[96][16] = {
 #define WIN_W 1280
 #define WIN_H 32
 
+/* Known WLTIOS apps we track in the taskbar.
+ * /proc/<pid>/comm is the bare executable name (no path), truncated to
+ * 15 chars by the kernel — so the match strings here must be <= 15 chars
+ * and must equal the executable's basename. */
+typedef struct {
+    const char *comm;     /* /proc/<pid>/comm match */
+    const char *label;    /* what we print in the bar */
+} wlt_app_t;
+
+static const wlt_app_t TRACKED_APPS[] = {
+    {"wlt-terminal",     "terminal"},
+    {"wlt-filemanager",  "filemgr"},
+    {"wlt-launcher",     "launcher"},
+    {"wlt-settings",     "settings"},
+    {"kairos_window",    "kairos"},
+    {"kairos",           "kairos"},
+    {NULL, NULL}
+};
+#define MAX_RUNNING 8
+
 /* Wayland state (same boilerplate) */
 static struct wl_display *display;
 static struct wl_compositor *compositor;
@@ -227,15 +257,57 @@ static double uptime(void) {
     double up; fscanf(f,"%lf",&up); fclose(f); return up;
 }
 
+/* Scan /proc for known WLTIOS apps and collect their labels.
+ * Returns count of running apps found (deduplicated — each label appears once).
+ * labels[] filled with up to MAX_RUNNING non-NULL pointers. */
+static int scan_running_apps(const char *labels[MAX_RUNNING]) {
+    DIR *proc = opendir("/proc");
+    if(!proc) return 0;
+
+    int count = 0;
+    char seen[16] = {0};  /* one byte per tracked app */
+    int n_apps = 0;
+    while(TRACKED_APPS[n_apps].comm) n_apps++;
+
+    struct dirent *e;
+    while((e = readdir(proc)) != NULL) {
+        /* only numeric dir entries = PIDs */
+        if(!isdigit((unsigned char)e->d_name[0])) continue;
+
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%.20s/comm", e->d_name);
+        FILE *f = fopen(path, "r");
+        if(!f) continue;
+        char comm[32] = {0};
+        if(fscanf(f, "%31s", comm) != 1) { fclose(f); continue; }
+        fclose(f);
+
+        for(int i = 0; i < n_apps; i++) {
+            if(seen[i]) continue;
+            /* /proc/<pid>/comm is the bare executable name (no path),
+             * truncated to 15 chars by the kernel. Match exactly. */
+            if(strcmp(comm, TRACKED_APPS[i].comm) == 0) {
+                if(count < MAX_RUNNING) {
+                    labels[count++] = TRACKED_APPS[i].label;
+                }
+                seen[i] = 1;
+                break;
+            }
+        }
+    }
+    closedir(proc);
+    return count;
+}
+
 static void render(void) {
     /* Dark bar background */
     for(int y=0;y<WIN_H;y++) for(int x=0;x<WIN_W;x++)
         px(x,y,0x20,0x20,0x30);
 
-    /* WLTIOS title (white) */
+    /* WLTIOS title (white, left) */
     draw_text(8, 8, "WLTIOS 0.1.0", 0xFF,0xFF,0xFF);
 
-    /* Tor status (green if running, red if not) */
+    /* Tor status (left of center) */
     int tor=tor_running();
     draw_text(200, 8, tor?"TOR: ON":"TOR: OFF", tor?0x00:0xFF, tor?0xFF:0x44, 0x00);
 
@@ -248,6 +320,27 @@ static void render(void) {
     char ram_str[32]; snprintf(ram_str,sizeof(ram_str),"RAM: %d%%",ram);
     uint8_t ram_r = ram>80?0xFF:0x00, ram_g = ram>80?0x44:0xFF;
     draw_text(500, 8, ram_str, ram_r, ram_g, 0x00);
+
+    /* ─── Taskbar: running-app list (middle of bar) ───
+     * Per wlt-shell.md spec: [Start] [App1] [App2] [App3] ... [Tor] [Net] [Bat] [Clock]
+     * We render: "RUN:" followed by each tracked app label in brackets. */
+    const char *labels[MAX_RUNNING] = {0};
+    int n = scan_running_apps(labels);
+    int tx = 640;
+    draw_text(tx, 8, "RUN:", 0xC0,0xC0,0xD0);
+    tx += 5 * (FONT_W + 1);
+    if(n == 0) {
+        draw_text(tx, 8, "(none)", 0x70,0x70,0x80);
+    } else {
+        for(int i = 0; i < n && i < MAX_RUNNING; i++) {
+            char buf[24];
+            snprintf(buf, sizeof(buf), "[%s]", labels[i]);
+            /* Cyan highlight for running apps */
+            draw_text(tx, 8, buf, 0x00,0xC0,0xE0);
+            tx += (int)strlen(buf) * (FONT_W + 1) + 4;
+            if(tx > WIN_W - 200) break;  /* leave room for uptime */
+        }
+    }
 
     /* Uptime (right side) */
     double up=uptime();

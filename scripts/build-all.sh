@@ -6,13 +6,15 @@ TERM_DIR=$REPO/src/userspace/wlt-terminal
 FM=$REPO/src/userspace/wlt-filemanager
 LAUNCH=$REPO/src/userspace/wlt-launcher
 SHELL=$REPO/src/userspace/wlt-shell
+AI=$REPO/src/userspace/wlt-ai
+SETTINGS=$REPO/src/userspace/wlt-settings
 ROOTFS=~/wltios-build/wltios-rootfs64
 
 echo "=== STEP 1: generate xdg-shell protocol ==="
 wayland-scanner client-header /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml /tmp/xdg-shell-client-protocol.h
 wayland-scanner private-code /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml /tmp/xdg-shell-client-protocol.c
 
-echo "=== STEP 2: compile compositor v4 ==="
+echo "=== STEP 2: compile compositor ==="
 cp $COMP/include/compositor.h /tmp/compositor.h
 gcc -DWLR_USE_UNSTABLE -I /tmp -I $COMP \
     $(pkg-config --cflags wlroots-0.18 wayland-server libdrm pixman-1 xkbcommon) \
@@ -45,7 +47,24 @@ gcc -O2 -Wall -I /tmp $(pkg-config --cflags wayland-client) \
     $(pkg-config --libs wayland-client) -o /tmp/wlt-statusbar 2>&1 | tail -3
 cp /tmp/wlt-statusbar $ROOTFS/usr/bin/wlt-statusbar && chmod 755 $ROOTFS/usr/bin/wlt-statusbar
 
-echo "=== STEP 7: repack initramfs ==="
+echo "=== STEP 7: compile kairos window ==="
+gcc -O2 -Wall -I /tmp $(pkg-config --cflags wayland-client) \
+    $AI/kairos_window.c /tmp/xdg-shell-client-protocol.c \
+    $(pkg-config --libs wayland-client) -o /tmp/kairos-window 2>&1 | tail -3
+cp /tmp/kairos-window $ROOTFS/usr/bin/kairos-window && chmod 755 $ROOTFS/usr/bin/kairos-window
+
+echo "=== STEP 8: try settings app ==="
+gcc -O2 -Wall -I $SETTINGS -I /tmp $(pkg-config --cflags wayland-client) \
+    $SETTINGS/wlt-settings-app.c /tmp/xdg-shell-client-protocol.c \
+    $(pkg-config --libs wayland-client) -o /tmp/wlt-settings 2>&1 | tail -5
+if [ -f /tmp/wlt-settings ]; then
+    cp /tmp/wlt-settings $ROOTFS/usr/bin/wlt-settings && chmod 755 $ROOTFS/usr/bin/wlt-settings
+    echo "settings app compiled OK"
+else
+    echo "settings app compile FAILED (expected — has include deps)"
+fi
+
+echo "=== STEP 9: repack initramfs ==="
 fakeroot bash -c '
 cd ~/wltios-build/wltios-rootfs64
 rm -f dev/console dev/null dev/zero dev/mem dev/urandom dev/tty dev/ttyS0 dev/fb0

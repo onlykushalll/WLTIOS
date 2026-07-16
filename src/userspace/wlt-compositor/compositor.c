@@ -39,6 +39,7 @@
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/util/box.h>
+#include <linux/input.h>
 #include <wlr/render/pixman.h>
 
 /* ═══════════════════════════════════════════════════════════════════════
