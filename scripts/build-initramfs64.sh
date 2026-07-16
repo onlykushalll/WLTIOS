@@ -121,10 +121,17 @@ E1000_KO=$(find /tmp/amd64-extract -name "e1000.ko" 2>/dev/null | head -1)
 if [ -n "$E1000_KO" ]; then
     mkdir -p "$OUT_DIR/lib/modules"
     cp "$E1000_KO" "$OUT_DIR/lib/modules/e1000.ko"
-    echo "e1000.ko copied: $E1000_KO" >> $LOG
+    cp $(find /tmp/amd64-extract -name "virtio.ko" | head -1) "$OUT_DIR/lib/modules/virtio.ko"
+    cp $(find /tmp/amd64-extract -name "virtio_ring.ko" | head -1) "$OUT_DIR/lib/modules/virtio_ring.ko"
+    cp $(find /tmp/amd64-extract -name "virtio_pci.ko" | head -1) "$OUT_DIR/lib/modules/virtio_pci.ko"
+    cp $(find /tmp/amd64-extract -name "virtio_dma_buf.ko" | head -1) "$OUT_DIR/lib/modules/virtio_dma_buf.ko"
+    cp $(find /tmp/amd64-extract -name "cec.ko" | head -1) "$OUT_DIR/lib/modules/cec.ko"
+    cp $(find /tmp/amd64-extract -name "drm.ko" | head -1) "$OUT_DIR/lib/modules/drm.ko"
+    cp $(find /tmp/amd64-extract -name "drm_kms_helper.ko" | head -1) "$OUT_DIR/lib/modules/drm_kms_helper.ko"
+    cp $(find /tmp/amd64-extract -name "virtio-gpu.ko" | head -1) "$OUT_DIR/lib/modules/virtio-gpu.ko"
+    echo "Modules copied" >> $LOG
 else
-    echo "e1000.ko not found — checking if built-in" >> $LOG
-    grep -i e1000 /tmp/amd64-extract/lib/modules/5.10.0-30-amd64/modules.builtin 2>/dev/null >> $LOG
+    echo "e1000.ko not found" >> $LOG
 fi
 
 echo "=== Installing compositor + wlroots libs ===" >> $LOG
@@ -135,16 +142,32 @@ gcc -Wall -Wextra -DWLR_USE_UNSTABLE -I"${COMP_DIR}" -I"${COMP_DIR}/include" \
     "${COMP_DIR}/compositor.c" "${COMP_DIR}/comp_main.c" \
     $(pkg-config --libs wlroots-0.18 wayland-server) \
     -o /tmp/wlt-compositor-test 2>> $LOG
-if [ -x /tmp/wlt-compositor-test ]; then
-    cp /tmp/wlt-compositor-test "$OUT_DIR/usr/bin/wlt-compositor"
-    chmod 755 "$OUT_DIR/usr/bin/wlt-compositor"
-    for lib in $(ldd /tmp/wlt-compositor-test 2>/dev/null | awk '{print $3}' | grep "^/"); do
-        cp -L "$lib" "$OUT_DIR/lib/" 2>/dev/null || true
-    done
-    cp /lib64/ld-linux-x86-64.so.2 "$OUT_DIR/lib64/" 2>/dev/null || true
-    ln -sf /lib64/ld-linux-x86-64.so.2 "$OUT_DIR/lib/ld-linux-x86-64.so.2" 2>/dev/null || true
-    LIB_COUNT=$(ls "$OUT_DIR/lib/"*.so* 2>/dev/null | wc -l)
-    echo "compositor + $LIB_COUNT libs copied" >> $LOG
+    # Build wayland_test
+    echo "=== Building 64-bit wayland_test ===" >> $LOG
+    gcc -Wall -Wextra -O2 \
+        $(pkg-config --cflags wayland-client) \
+        "${WLTIOS_SRC}/userspace/wlt-terminal/wayland_test.c" \
+        $(pkg-config --libs wayland-client) \
+        -o /tmp/wayland-test-bin 2>> $LOG
+
+    if [ -x /tmp/wlt-compositor-test ] && [ -x /tmp/wayland-test-bin ]; then
+        cp /tmp/wlt-compositor-test "$OUT_DIR/usr/bin/wlt-compositor"
+        chmod 755 "$OUT_DIR/usr/bin/wlt-compositor"
+        cp /tmp/wayland-test-bin "$OUT_DIR/usr/bin/wayland_test"
+        chmod 755 "$OUT_DIR/usr/bin/wayland_test"
+        
+        for bin_file in /tmp/wlt-compositor-test /tmp/wayland-test-bin; do
+    # Terminal client (fb0 direct render)
+    cp /home/kushal/wlt-terminal "$OUT_DIR/usr/bin/wlt-terminal" 2>/dev/null || true
+    chmod 755 "$OUT_DIR/usr/bin/wlt-terminal" 2>/dev/null || true
+            for lib in $(ldd "$bin_file" 2>/dev/null | awk '{print $3}' | grep "^/"); do
+                cp -L "$lib" "$OUT_DIR/lib/" 2>/dev/null || true
+            done
+        done
+        cp /lib64/ld-linux-x86-64.so.2 "$OUT_DIR/lib64/" 2>/dev/null || true
+        ln -sf /lib64/ld-linux-x86-64.so.2 "$OUT_DIR/lib/ld-linux-x86-64.so.2" 2>/dev/null || true
+        LIB_COUNT=$(ls "$OUT_DIR/lib/"*.so* 2>/dev/null | wc -l)
+        echo "compositor, wayland_test + $LIB_COUNT libs copied" >> $LOG
 
     # DRM/Mesa driver: NOT caught by the ldd loop above, because it's loaded
     # via dlopen() at runtime based on detected hardware, not linked at
@@ -175,8 +198,10 @@ fi
 
 echo "=== Installing 64-bit Tor ===" >> $LOG
 cd /tmp
-if [ ! -f /tmp/tor-amd64.apk ]; then
-    curl -s --max-time 60 -L -o /tmp/tor-amd64.apk "https://dl-cdn.alpinelinux.org/alpine/v3.20/community/x86_64/tor-0.4.9.9-r0.apk" 2>> $LOG
+rm -f /tmp/tor-amd64.apk
+TOR_APK=$(curl -s --max-time 15 "https://dl-cdn.alpinelinux.org/alpine/v3.20/community/x86_64/" 2>/dev/null | grep -oE 'href="tor-[0-9][a-zA-Z0-9._-]*\.apk"' | cut -d'"' -f2 | head -1)
+if [ -n "$TOR_APK" ]; then
+    curl -s --max-time 60 -L -o /tmp/tor-amd64.apk "https://dl-cdn.alpinelinux.org/alpine/v3.20/community/x86_64/$TOR_APK" 2>> $LOG
 fi
 if [ -s /tmp/tor-amd64.apk ]; then
     mkdir -p /tmp/tor-amd64-extract
@@ -184,19 +209,23 @@ if [ -s /tmp/tor-amd64.apk ]; then
     TOR_BIN=$(find /tmp/tor-amd64-extract -name "tor" -type f -executable 2>/dev/null | head -1)
     if [ -n "$TOR_BIN" ]; then
         cp "$TOR_BIN" "$OUT_DIR/usr/bin/tor"
-        chmod 755 "$OUT_DIR/usr/bin/tor"
         mkdir -p /tmp/tor-libs64
         curl -s --max-time 20 -L -o /tmp/musl64.apk "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/musl-1.2.5-r3.apk" 2>> $LOG
         tar -xzf /tmp/musl64.apk -C /tmp/tor-libs64 2>/dev/null
         cp /tmp/tor-libs64/lib/ld-musl-x86_64.so.1 "$OUT_DIR/lib/" 2>/dev/null
-        for pkg in libxtables libip4tc libip6tc libssl3 libcrypto3 libevent zlib liblzma libzstd libseccomp libcap; do
-            APK=$(curl -s --max-time 10 "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/" 2>/dev/null | grep -oE "${pkg}-[0-9][^\"]*\.apk" | head -1)
+        for pkg in libxtables libip4tc libip6tc libssl3 libcrypto3 libevent zlib xz-libs zstd-libs libseccomp libcap2; do
+            APK=$(curl -s --max-time 10 "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/" 2>/dev/null | grep -oE 'href="'"${pkg}"'-[0-9][a-zA-Z0-9._-]*\.apk"' | cut -d'"' -f2 | head -1)
             if [ -n "$APK" ]; then
                 curl -s --max-time 20 -L -o /tmp/${pkg}64.apk "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/$APK" 2>> $LOG
                 tar -xzf /tmp/${pkg}64.apk -C /tmp/tor-libs64 2>/dev/null
             fi
         done
-        find /tmp/tor-libs64 -name "*.so*" -exec cp -a {} "$OUT_DIR/lib/" \; 2>/dev/null
+        find /tmp/tor-libs64 -name "*.so*" -type f -exec cp -f {} "$OUT_DIR/lib/" \; 2>/dev/null
+
+    # Override with glibc-compiled Tor (fixes musl segfault)
+    cp -f /home/kushal/tor-staging/tor-glibc "$OUT_DIR/usr/bin/tor"
+    cp -f /home/kushal/tor-staging/libevent-2.1.so.7 "$OUT_DIR/lib/"
+    chmod +x "$OUT_DIR/usr/bin/tor"
         cd "$OUT_DIR/lib"
         for f in *.so.*.*; do
             base=$(echo "$f" | sed 's/\.[0-9]*\.[0-9]*$//')
@@ -204,6 +233,7 @@ if [ -s /tmp/tor-amd64.apk ]; then
         done
         cd /
         ln -sf ld-musl-x86_64.so.1 "$OUT_DIR/lib/libc.musl-x86_64.so.1" 2>/dev/null
+    ln -sf libcap.so.2.78 "$OUT_DIR/lib/libcap.so.2" 2>/dev/null
         echo "tor + libs installed" >> $LOG
     fi
 fi

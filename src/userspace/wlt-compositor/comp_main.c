@@ -3,8 +3,9 @@
  * @brief Production compositor main — renders desktop + status bar, runs forever
  * @module wlt-compositor
  *
- * v2: Added framebuffer desktop rendering (navy bg + status bar with clock + Tor status)
- * before entering the wlroots event loop.
+ * v3: Removed fb0 early-exit — let the wlroots compositor run with DRM backend.
+ *     The desktop background is still rendered to fb0 first (for kernel fbcon
+ *     text visibility during boot), but the compositor then takes over via DRM.
  */
 
 #include "compositor.h"
@@ -89,131 +90,33 @@ static void render_desktop(void)
         }
     }
 
-    /* Draw "WLTIOS 0.1.0" on the left of status bar (white pixels) */
-    /* Simple 5x7 font for each character */
-    const char *title = "WLTIOS 0.1.0";
-    int tx = 8, ty = bar_y + 12;
-    for (const char *c = title; *c; c++)
-    {
-        /* Draw each character as a simple block pattern */
-        if (*c == ' ')
-        {
-            tx += 8;
-            continue;
-        }
-        /* Draw a simple 5x7 dot pattern for each char */
-        for (int dy = 0; dy < 7; dy++)
-        {
-            for (int dx = 0; dx < 5; dx++)
-            {
-                /* Simple pattern: all chars get a basic block outline */
-                int px = tx + dx, py = ty + dy;
-                if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
-                {
-                    uint8_t *p = fb_mem + (py * line_len) + (px * bytes_pp);
-                    /* Only draw if the char is not a space/dot */
-                    if (*c != '.' && *c != ' ')
-                    {
-                        p[0] = 0xFF; p[1] = 0xFF; p[2] = 0xFF; /* white */
-                        if (bytes_pp == 4) p[3] = 0xFF;
-                    }
-                }
-            }
-        }
-        tx += 8;
-    }
-
-    /* Draw "TOR: ON" on the right side (green if tor.pid exists) */
-    const char *tor_text = "TOR: ON";
-    int tor_x = fb_w - 80;
-    int tor_y = bar_y + 12;
-
-    /* Check if Tor is running */
-    int tor_running = (access("/run/tor.pid", F_OK) == 0) ||
-                      (access("/var/lib/tor", F_OK) == 0);
-
-    uint8_t tr, tg, tb;
-    if (tor_running) { tr = 0x00; tg = 0xFF; tb = 0x88; } /* green */
-    else { tr = 0xFF; tg = 0x44; tb = 0x44; } /* red */
-
-    for (const char *c = tor_text; *c; c++)
-    {
-        if (*c == ' ' || *c == ':')
-        {
-            tor_x += 8;
-            continue;
-        }
-        for (int dy = 0; dy < 7; dy++)
-        {
-            for (int dx = 0; dx < 5; dx++)
-            {
-                int px = tor_x + dx, py = tor_y + dy;
-                if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
-                {
-                    uint8_t *p = fb_mem + (py * line_len) + (px * bytes_pp);
-                    p[0] = tb; p[1] = tg; p[2] = tr;
-                    if (bytes_pp == 4) p[3] = 0xFF;
-                }
-            }
-        }
-        tor_x += 8;
-    }
-
-    /* Draw a clock in center (HH:MM:SS from /proc/uptime) */
-    FILE *up = fopen("/proc/uptime", "r");
-    if (up)
-    {
-        double uptime;
-        fscanf(up, "%lf", &uptime);
-        fclose(up);
-        unsigned int sec = (unsigned int)uptime;
-        unsigned int h = sec / 3600;
-        unsigned int m = (sec % 3600) / 60;
-        unsigned int s = sec % 60;
-        char clock_str[16];
-        snprintf(clock_str, sizeof(clock_str), "%02u:%02u:%02u", h, m, s);
-
-        int clk_x = (fb_w - 48) / 2;
-        int clk_y = bar_y + 12;
-        for (const char *c = clock_str; *c; c++)
-        {
-            if (*c == ':')
-            {
-                clk_x += 8;
-                continue;
-            }
-            for (int dy = 0; dy < 7; dy++)
-            {
-                for (int dx = 0; dx < 5; dx++)
-                {
-                    int px = clk_x + dx, py = clk_y + dy;
-                    if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
-                    {
-                        uint8_t *p = fb_mem + (py * line_len) + (px * bytes_pp);
-                        p[0] = 0xFF; p[1] = 0xFF; p[2] = 0xFF; /* white */
-                        if (bytes_pp == 4) p[3] = 0xFF;
-                    }
-                }
-            }
-            clk_x += 8;
-        }
-    }
-
     munmap(fb_mem, fb_size);
     close(fb);
-    fprintf(stderr, "[compositor] Desktop rendered (navy bg + status bar + clock + Tor status)\n");
+    fprintf(stderr, "[compositor] Desktop rendered (navy bg + status bar)\n");
 }
 
 int main(void) {
-    fprintf(stderr, "[compositor] WLTIOS compositor starting\n");
+    setenv("LD_LIBRARY_PATH", "/usr/lib/x86_64-linux-gnu:/lib:/usr/lib", 1);
+    setenv("LIBGL_DRIVERS_PATH", "/usr/lib/x86_64-linux-gnu/dri", 1);
+    setenv("WLR_RENDERER", "pixman", 1);
+    fprintf(stderr, "[compositor] env: LD_LIBRARY_PATH=%s LIBGL_DRIVERS_PATH=%s\n",
+            getenv("LD_LIBRARY_PATH"), getenv("LIBGL_DRIVERS_PATH"));
+
+    fprintf(stderr, "[compositor] WLTIOS compositor starting (v3 — DRM output test)\n");
 
     struct sigaction sa = {0};
     sa.sa_handler = on_sigterm;
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
-    /* Render desktop background + status bar to /dev/fb0 before starting compositor */
+    /* Render desktop background to fb0 first (for boot visibility) */
     render_desktop();
+
+    /* v3: NO fb0 early-exit — fall through to wlroots compositor.
+     * The compositor will create a DRM backend (if /dev/dri/card0 exists)
+     * and drive the display via DRM scanout. The fb0 desktop render above
+     * is just a fallback that shows during boot before the compositor
+     * takes over. */
 
     wlt_comp_state_t state;
     wlt_comp_error_t err = wlt_comp_init(&state);

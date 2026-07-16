@@ -205,7 +205,8 @@ else if(!strcmp(i,"wl_seat")){seat=wl_registry_bind(r,n,&wl_seat_interface,4);ke
 
 static void reg_remove(void*d,struct wl_registry*r,uint32_t n){(void)d;(void)r;(void)n;}
 static const struct wl_registry_listener rl={.global=reg_global,.global_remove=reg_remove};
-static void xs_conf(void*d,struct xdg_surface*x,uint32_t s){(void)d;xdg_surface_ack_configure(x,s);}
+static int configured=0;
+static void xs_conf(void*d,struct xdg_surface*x,uint32_t s){(void)d;xdg_surface_ack_configure(x,s);configured=1;render();}
 static const struct xdg_surface_listener xsl={.configure=xs_conf};
 static void xt_conf(void*d,struct xdg_toplevel*t,int32_t w,int32_t h,struct wl_array*s){(void)d;(void)t;(void)w;(void)h;(void)s;}
 static void xt_close(void*d,struct xdg_toplevel*t){(void)d;(void)t;running=0;}
@@ -253,7 +254,7 @@ int main(void)
     xdg_toplevel_set_app_id(toplevel,"wlt-filemanager");
     buffer=mkbuf();
     if(!buffer){fprintf(stderr,"[fm] No buffer\n");return 1;}
-    scan_dir(current_path);render();
+    scan_dir(current_path);
     if(keyboard)wl_keyboard_add_listener(keyboard,&kbl,NULL);
     fprintf(stderr,"[wlt-fm] Window ready\n");
     while(running)wl_display_dispatch(display);
@@ -265,3 +266,4 @@ int main(void)
     wl_display_disconnect(display);
     return 0;
 }
+

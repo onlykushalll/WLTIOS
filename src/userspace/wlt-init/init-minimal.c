@@ -25,6 +25,7 @@
 #include <linux/reboot.h>
 #include <linux/fb.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
 #include <errno.h>
 
 #define WLTIOS_VERSION "0.1.0"
@@ -139,6 +140,35 @@ static pid_t start_tor_background(void)
     return pid;
 }
 
+static int load_module(const char *path)
+{
+    int mfd = open(path, O_RDONLY);
+    if (mfd < 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "[wlt-init] Failed to open %s: %s", path, strerror(errno));
+        print_str(msg);
+        return -1;
+    }
+#ifdef __i386__
+#define __NR_finit_module 350
+#else
+#define __NR_finit_module 313
+#endif
+    long ret = syscall(__NR_finit_module, mfd, "", 0);
+    close(mfd);
+    if (ret == 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "[wlt-init] Loaded %s module", path);
+        print_str(msg);
+        return 0;
+    } else {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "[wlt-init] Failed to load %s: ret=%ld errno=%d (%s)", path, ret, errno, strerror(errno));
+        print_str(msg);
+        return -1;
+    }
+}
+
 int main(void)
 {
     redirect_console();
@@ -225,32 +255,16 @@ int main(void)
         }
     }
 
-    /* Load e1000 kernel module (Debian kernel has e1000 as module, not built-in).
-     * Uses finit_module() syscall to load .ko from initramfs.
-     * On i386, __NR_finit_module = 350. On x86_64 it's 313. */
-    {
-        int mfd = open("/lib/modules/e1000.ko", O_RDONLY);
-        if (mfd >= 0)
-        {
-            /* i386 syscall number for finit_module */
-            #ifdef __i386__
-            #define __NR_finit_module 350
-            #else
-            #define __NR_finit_module 313
-            #endif
-            long ret = syscall(__NR_finit_module, mfd, "", 0);
-            if (ret == 0)
-                print_str("[wlt-init] Loaded e1000.ko module");
-            else
-            {
-                char msg[80];
-                int n = snprintf(msg, sizeof(msg),
-                    "[wlt-init] e1000.ko load: ret=%ld errno=%d\r\n", ret, errno);
-                write(1, msg, n > 0 ? n : 0);
-            }
-            close(mfd);
-        }
-    }
+    /* Load required kernel modules sequentially */
+    load_module("/lib/modules/e1000.ko");
+    load_module("/lib/modules/virtio.ko");
+    load_module("/lib/modules/virtio_ring.ko");
+    load_module("/lib/modules/virtio_pci.ko");
+    load_module("/lib/modules/virtio_dma_buf.ko");
+    load_module("/lib/modules/cec.ko");
+    load_module("/lib/modules/drm.ko");
+    load_module("/lib/modules/drm_kms_helper.ko");
+    load_module("/lib/modules/virtio-gpu.ko");
 
     /* wlt-net — REAL network bringup */
     if (access("/sbin/wlt-net", X_OK) == 0) {
@@ -332,6 +346,15 @@ int main(void)
         print_str("[wlt-init] Network-only mode. Use 'netcheck' to verify.");
     }
 
+
+    /* Mount /dev/pts for PTY support (needed by wlt-terminal forkpty) */
+    mkdir("/dev/pts", 0755);
+    if (mount("devpts", "/dev/pts", "devpts", 0, NULL) < 0) {
+        print_str("[wlt-init] WARNING: /dev/pts mount failed");
+    } else {
+        print_str("[wlt-init] /dev/pts mounted");
+    }
+
     /* Compositor — start in background if binary exists */
     if (access("/usr/bin/wlt-compositor", X_OK) == 0)
     {
@@ -339,9 +362,7 @@ int main(void)
         pid_t comp_pid = fork();
         if (comp_pid == 0)
         {
-            /* Child: set env vars for compositor */
-            setenv("WLR_BACKENDS", "headless", 1);
-            setenv("WLR_RENDERER", "pixman", 1);
+            /* Child: set env vars for compositor (let compositor decide backend based on DRM availability) */
             setenv("WAYLAND_DISPLAY", "wayland-0", 1);
             setenv("XDG_RUNTIME_DIR", "/run", 1);
             char *argv[] = { "/usr/bin/wlt-compositor", NULL };
@@ -349,8 +370,6 @@ int main(void)
                 "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
                 "TERM=linux",
                 "HOME=/root",
-                "WLR_BACKENDS=headless",
-                "WLR_RENDERER=pixman",
                 "WAYLAND_DISPLAY=wayland-0",
                 "XDG_RUNTIME_DIR=/run",
                 NULL
@@ -366,6 +385,36 @@ int main(void)
                 "[wlt-init] Compositor started (pid=%d)\r\n", (int)comp_pid);
             write(1, msg, n > 0 ? n : 0);
             sleep(3);  /* Give compositor time to create socket */
+
+        /* wlt-terminal — start in background if binary exists */
+        if (access("/usr/bin/wlt-terminal", X_OK) == 0)
+        {
+            print_str("[wlt-init] Starting wlt-terminal...");
+            pid_t term_pid = fork();
+            if (term_pid == 0)
+            {
+                char *targv[] = { "/usr/bin/wlt-terminal", NULL };
+                char *tenvp[] = {
+                    "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+                    "TERM=linux",
+                    "HOME=/root",
+                    "WAYLAND_DISPLAY=wayland-0",
+                    "XDG_RUNTIME_DIR=/run",
+                    NULL
+                };
+                execve("/usr/bin/wlt-terminal", targv, tenvp);
+                write(1, "[wlt-init] wlt-terminal exec failed\r\n", 37);
+                _exit(1);
+            }
+            else if (term_pid > 0)
+            {
+                char tmsg[64];
+                int tn = snprintf(tmsg, sizeof(tmsg),
+                    "[wlt-init] wlt-terminal started (pid=%d)\r\n", (int)term_pid);
+                write(1, tmsg, tn > 0 ? tn : 0);
+                sleep(2);  /* Give terminal time to render first frame */
+            }
+        }
         }
     }
 
