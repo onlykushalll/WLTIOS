@@ -68,7 +68,12 @@ typedef struct wlt_view {
     struct wl_listener destroy;
     struct wl_listener request_move;
     int x, y;
+    int w, h;           /* current size (0 = client default) */
+    int prev_x, prev_y; /* saved geometry for maximize restore */
+    int prev_w, prev_h;
     bool mapped;
+    bool minimized;
+    bool maximized;
     struct wl_list link;  /* linked list of all views */
 } wlt_view_t;
 
@@ -79,11 +84,29 @@ static wlt_view_t *g_focused_view = NULL;
 static bool g_dragging = false;
 static int g_drag_x, g_drag_y;  /* offset from cursor to view origin */
 
+/* Resize state */
+static bool g_resizing = false;
+static int g_resize_start_x, g_resize_start_y;
+static int g_resize_start_w, g_resize_start_h;
+
+/* Output dimensions (for maximize) */
+static int g_output_w = 1280, g_output_h = 800;
+
 /* ═══════════════════════════════════════════════════════════════════════
  *  FOCUS MANAGEMENT
  * ═══════════════════════════════════════════════════════════════════════ */
 static void focus_view(wlt_view_t *view) {
     if (view == NULL || !view->mapped) return;
+
+    /* Un-minimize if needed (for taskbar click-to-restore) */
+    if (view->minimized) {
+        view->minimized = false;
+        if (view->scene_tree) {
+            wlr_scene_node_set_enabled(&view->scene_tree->node, true);
+        }
+        fprintf(stderr, "[compositor] View un-minimized on focus\n");
+    }
+
     if (g_focused_view == view) return;
 
     /* Remove keyboard focus from previous view */
@@ -119,7 +142,7 @@ static wlt_view_t *view_at(double x, double y) {
     struct wlr_surface *surface = NULL;
     wlt_view_t *view;
     wl_list_for_each(view, &g_views, link) {
-        if (!view->mapped) continue;
+        if (!view->mapped || view->minimized) continue;
         surface = wlr_xdg_surface_surface_at(view->xdg_surface,
                     x - view->x, y - view->y, &sx, &sy);
         if (surface) return view;
@@ -246,6 +269,67 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
         return;
     }
 
+    /* Alt+M: minimize focused window */
+    if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED &&
+        (mods & WLR_MODIFIER_ALT) && event->keycode == 50) { /* 50 = M */
+        if (g_focused_view) {
+            g_focused_view->minimized = true;
+            if (g_focused_view->scene_tree) {
+                wlr_scene_node_set_enabled(&g_focused_view->scene_tree->node, false);
+            }
+            fprintf(stderr, "[compositor] Minimized view\n");
+            g_focused_view = NULL;
+            /* Focus next mapped view */
+            wlt_view_t *v;
+            wl_list_for_each(v, &g_views, link) {
+                if (v->mapped && !v->minimized) { focus_view(v); break; }
+            }
+        }
+        return;
+    }
+
+    /* Alt+F: maximize/restore focused window */
+    if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED &&
+        (mods & WLR_MODIFIER_ALT) && event->keycode == 33) { /* 33 = F */
+        if (g_focused_view && g_focused_view->xdg_surface->toplevel) {
+            wlt_view_t *view = g_focused_view;
+            if (view->maximized) {
+                /* Restore */
+                view->x = view->prev_x;
+                view->y = view->prev_y;
+                view->w = view->prev_w;
+                view->h = view->prev_h;
+                view->maximized = false;
+                if (view->scene_tree) {
+                    wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+                }
+                wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
+                    view->w > 0 ? view->w : 0, view->h > 0 ? view->h : 0);
+                fprintf(stderr, "[compositor] Restored view to (%d,%d) %dx%d\n",
+                        view->x, view->y, view->w, view->h);
+            } else {
+                /* Maximize */
+                view->prev_x = view->x;
+                view->prev_y = view->y;
+                view->prev_w = view->w;
+                view->prev_h = view->h;
+                view->x = 0;
+                view->y = 0;
+                view->w = g_output_w;
+                view->h = g_output_h - 32; /* leave room for status bar */
+                view->maximized = true;
+                if (view->scene_tree) {
+                    wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+                }
+                wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
+                    view->w, view->h);
+                fprintf(stderr, "[compositor] Maximized view to %dx%d\n",
+                        view->w, view->h);
+            }
+        }
+        return;
+    }
+
     /* Route to focused client */
     wlr_seat_set_keyboard(g_seat, &kb->keyboard);
     wlr_seat_keyboard_notify_key(g_seat, event->time_msec,
@@ -291,6 +375,19 @@ static void pointer_handle_motion(struct wl_listener *listener, void *data) {
         }
     }
 
+    /* Resizing: adjust focused view size */
+    if (g_resizing && g_focused_view && g_focused_view->xdg_surface->toplevel) {
+        int dx = (int)g_cursor->x - g_resize_start_x;
+        int dy = (int)g_cursor->y - g_resize_start_y;
+        int new_w = g_resize_start_w + dx;
+        int new_h = g_resize_start_h + dy;
+        if (new_w < 100) new_w = 100;
+        if (new_h < 100) new_h = 100;
+        g_focused_view->w = new_w;
+        g_focused_view->h = new_h;
+        wlr_xdg_toplevel_set_size(g_focused_view->xdg_surface->toplevel, new_w, new_h);
+    }
+
     /* Update pointer focus */
     wlt_view_t *view = view_at(g_cursor->x, g_cursor->y);
     struct wlr_surface *surface = NULL;
@@ -319,18 +416,39 @@ static void pointer_handle_button(struct wl_listener *listener, void *data) {
         if (view) {
             focus_view(view);
 
-            /* Alt+click: start drag-to-move */
             uint32_t mods = wlr_keyboard_get_modifiers(wlr_seat_get_keyboard(g_seat));
             if (mods & WLR_MODIFIER_ALT) {
-                g_dragging = true;
-                g_drag_x = (int)g_cursor->x - view->x;
-                g_drag_y = (int)g_cursor->y - view->y;
-                fprintf(stderr, "[compositor] Drag started on view at (%d,%d)\n",
-                        view->x, view->y);
+                if (event->button == BTN_LEFT) {
+                    /* Alt+LeftClick: drag-to-move */
+                    g_dragging = true;
+                    g_drag_x = (int)g_cursor->x - view->x;
+                    g_drag_y = (int)g_cursor->y - view->y;
+                    fprintf(stderr, "[compositor] Drag started on view at (%d,%d)\n",
+                            view->x, view->y);
+                } else if (event->button == BTN_RIGHT) {
+                    /* Alt+RightClick: resize */
+                    g_resizing = true;
+                    g_resize_start_x = (int)g_cursor->x;
+                    g_resize_start_y = (int)g_cursor->y;
+                    g_resize_start_w = view->w > 0 ? view->w : 400;
+                    g_resize_start_h = view->h > 0 ? view->h : 300;
+                    fprintf(stderr, "[compositor] Resize started (start %dx%d at %d,%d)\n",
+                            g_resize_start_w, g_resize_start_h,
+                            g_resize_start_x, g_resize_start_y);
+                }
             }
         }
     } else if (event->state == WLR_BUTTON_RELEASED) {
-        g_dragging = false;
+        if (g_dragging) {
+            fprintf(stderr, "[compositor] Drag ended\n");
+            g_dragging = false;
+        }
+        if (g_resizing) {
+            fprintf(stderr, "[compositor] Resize ended (final %dx%d)\n",
+                    g_focused_view ? g_focused_view->w : 0,
+                    g_focused_view ? g_focused_view->h : 0);
+            g_resizing = false;
+        }
     }
 }
 
@@ -471,6 +589,11 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
         wlr_output_layout_add_auto(g_output_layout, output);
         fprintf(stderr, "[compositor] Output %s added to layout\n", output->name);
     }
+
+    /* Save output dimensions for maximize */
+    g_output_w = output->width;
+    g_output_h = output->height;
+    fprintf(stderr, "[compositor] Output dimensions: %dx%d\n", g_output_w, g_output_h);
 
     /* Wire the frame listener */
     output_frame_listener.notify = handle_output_frame;
