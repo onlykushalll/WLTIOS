@@ -178,7 +178,9 @@ static void handle_xdg_surface(struct wl_listener *listener, void *data) {
     if (g_scene) {
         struct wlr_scene_tree *tree = wlr_scene_xdg_surface_create(&g_scene->tree, xdg_surface);
         if (tree) {
-            fprintf(stderr, "[compositor] XDG surface added to scene graph (role=%d)\n",
+            /* Raise new surface to top so it's visible (not hidden behind existing windows) */
+            wlr_scene_node_raise_to_top(&tree->node);
+            fprintf(stderr, "[compositor] XDG surface added to scene graph (role=%d, raised to top)\n",
                     xdg_surface->role);
 
             /* Track this view for focus + window management.
@@ -536,7 +538,7 @@ static void handle_new_input(struct wl_listener *listener, void *data) {
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  OUTPUT + FRAME HANDLING
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ═════════════════════════════════════��═════════════════════════════════ */
 static void handle_output_frame(struct wl_listener *listener, void *data) {
     struct wlr_output *output = (struct wlr_output *)data;
     g_frame_count++;

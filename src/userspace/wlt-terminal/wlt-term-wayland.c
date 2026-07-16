@@ -447,6 +447,10 @@ int main(void) {
     if (kairos_pid == 0) { execl("/usr/bin/kairos-window", "kairos-window", NULL); _exit(127); }
     fprintf(stderr, "[wlt-term] kairos window launched (pid=%d)\n", kairos_pid);
 
+    pid_t settings_pid = fork();
+    if (settings_pid == 0) { execl("/usr/bin/wlt-settings", "wlt-settings", NULL); _exit(127); }
+    fprintf(stderr, "[wlt-term] settings app launched (pid=%d)\n", settings_pid);
+
     /* Main loop: poll PTY + dispatch Wayland */
     struct pollfd pfd = { .fd = master_fd, .events = POLLIN };
     while (running) {
