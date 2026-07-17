@@ -223,8 +223,15 @@ if [ -s /tmp/tor-amd64.apk ]; then
         find /tmp/tor-libs64 -name "*.so*" -type f -exec cp -f {} "$OUT_DIR/lib/" \; 2>/dev/null
 
     # Override with glibc-compiled Tor (fixes musl segfault)
-    cp -f /home/kushal/tor-staging/tor-glibc "$OUT_DIR/usr/bin/tor"
-    cp -f /home/kushal/tor-staging/libevent-2.1.so.7 "$OUT_DIR/lib/"
+    cp -f ${WLTIOS_SRC}/../packages/tor-libs/tor-glibc "$OUT_DIR/usr/bin/tor"
+    cp -f ${WLTIOS_SRC}/../packages/tor-libs/libevent-2.1.so.7.0.1 "$OUT_DIR/lib/"
+    cp -f ${WLTIOS_SRC}/../packages/tor-libs/liblzma.so.5 "$OUT_DIR/lib/"
+    cp -f ${WLTIOS_SRC}/../packages/tor-libs/libzstd.so.1.5.7 "$OUT_DIR/lib/"
+    ln -sf libzstd.so.1.5.7 "$OUT_DIR/lib/libzstd.so.1"
+    ln -sf libevent-2.1.so.7.0.1 "$OUT_DIR/lib/libevent-2.1.so.7"
+    cp -f ${WLTIOS_SRC}/../packages/tor-libs/liblzma.so.5 "$OUT_DIR/lib/"
+    cp -f ${WLTIOS_SRC}/../packages/tor-libs/libzstd.so.1.5.7 "$OUT_DIR/lib/"
+    ln -sf libzstd.so.1.5.7 "$OUT_DIR/lib/libzstd.so.1"
     chmod +x "$OUT_DIR/usr/bin/tor"
         cd "$OUT_DIR/lib"
         for f in *.so.*.*; do
