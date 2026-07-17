@@ -224,6 +224,12 @@ if [ -s /tmp/tor-amd64.apk ]; then
 
     # Override with glibc-compiled Tor (fixes musl segfault)
     cp -f ${WLTIOS_SRC}/../packages/tor-libs/tor-glibc "$OUT_DIR/usr/bin/tor"
+    # Glibc dynamic linker + deps for Tor (glibc binary on musl rootfs)
+    mkdir -p "$OUT_DIR/lib64"
+    cp -f /lib64/ld-linux-x86-64.so.2 "$OUT_DIR/lib64/" 2>/dev/null || true
+    for glib in libz.so.1 libm.so.6 libssl.so.3 libcrypto.so.3; do
+        find /usr/lib/x86_64-linux-gnu -name "$glib" -not -type l -exec cp -f {} "$OUT_DIR/usr/lib/x86_64-linux-gnu/" \; 2>/dev/null
+    done
     cp -f ${WLTIOS_SRC}/../packages/tor-libs/libevent-2.1.so.7.0.1 "$OUT_DIR/lib/"
     cp -f ${WLTIOS_SRC}/../packages/tor-libs/liblzma.so.5 "$OUT_DIR/lib/"
     cp -f ${WLTIOS_SRC}/../packages/tor-libs/libzstd.so.1.5.7 "$OUT_DIR/lib/"
