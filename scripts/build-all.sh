@@ -122,3 +122,34 @@ find . | cpio -o -H newc 2>/dev/null | gzip -9 > ~/wltios-build/wltios-initramfs
 echo "REPACKED"
 '
 echo "=== ALL DONE ==="
+
+echo "=== STEP 13: Install wlroots/wayland runtime libs ==="
+WLLIBS=$REPO/packages/wl-libs
+if [ -d "$WLLIBS" ]; then
+    cp "$WLLIBS"/*.so* $ROOTFS/lib/ 2>/dev/null || true
+    # Copy ld-linux
+    cp "$WLLIBS"/ld-linux-x86-64.so.2 $ROOTFS/lib64/ 2>/dev/null || true
+    ln -sf /lib64/ld-linux-x86-64.so.2 $ROOTFS/lib/ld-linux-x86-64.so.2 2>/dev/null || true
+    echo "wlroots/wayland runtime libs installed from packages/wl-libs/"
+else
+    echo "WARNING: packages/wl-libs/ not found"
+fi
+
+echo "=== STEP 14: Final repack ==="
+fakeroot bash -c '
+cd ~/wltios-build/wltios-rootfs64
+rm -f dev/console dev/null dev/zero dev/mem dev/urandom dev/tty dev/ttyS0 dev/fb0
+mkdir -p dev/dri
+mknod -m 600 dev/console c 5 1
+mknod -m 666 dev/null c 1 3
+mknod -m 666 dev/zero c 1 5
+mknod -m 640 dev/mem c 1 1
+mknod -m 666 dev/urandom c 1 9
+mknod -m 666 dev/tty c 5 0
+mknod -m 660 dev/ttyS0 c 4 64
+mknod -m 660 dev/fb0 c 29 0
+mknod -m 660 dev/dri/card0 c 226 0
+mknod -m 660 dev/dri/renderD128 c 226 128
+find . | cpio -o -H newc 2>/dev/null | gzip -9 > ~/wltios-build/wltios-initramfs64.cpio.gz
+echo "FINAL REPACK DONE"
+'
