@@ -399,8 +399,10 @@ int main(void) {
     cfg.enabled = true;
     cfg.mode = WLT_AI_MODE_LOCAL;
     cfg.memory_mode = WLT_AI_MEMORY_AMNESIC;
-    strncpy(cfg.local_llm_endpoint, "http://127.0.0.1:8080",
-            sizeof(cfg.local_llm_endpoint) - 1);
+    /* QEMU: 10.0.2.2 is the host (QEMU gateway). Production: 127.0.0.1. */
+    const char *llm_ep = getenv("WLT_AI_LLM_ENDPOINT");
+    if (!llm_ep) llm_ep = "http://10.0.2.2:8080";
+    strncpy(cfg.local_llm_endpoint, llm_ep, sizeof(cfg.local_llm_endpoint) - 1);
     strncpy(cfg.llm_model, "qwen2.5-1.5b", sizeof(cfg.llm_model) - 1);
     ai_ctx = wlt_ai_init(&cfg);
     if (ai_ctx == NULL) {
@@ -409,6 +411,28 @@ int main(void) {
         add_chat_line("(AI engine init failed)");
     } else {
         fprintf(stderr, "[kairos] AI engine ready (local LLM)\n");
+    }
+
+    /* Test mode: auto-send a query if /etc/wlt-ai-test exists */
+    const char *test_q = NULL;
+    {
+        FILE *tf = fopen("/etc/wlt-ai-test", "r");
+        if (tf) {
+            static char test_buf[256];
+            if (fgets(test_buf, sizeof(test_buf), tf)) {
+                char *nl = strchr(test_buf, '\n');
+                if (nl) *nl = '\0';
+                test_q = test_buf;
+            }
+            fclose(tf);
+        }
+    }
+    if (test_q && ai_ctx) {
+        fprintf(stderr, "[kairos] TEST QUERY: %s\n", test_q);
+        strncpy(input_buf, test_q, COLS - 1);
+        input_len = strlen(input_buf);
+        send_query();
+        needs_redraw = 1;
     }
 
     while(running) {
