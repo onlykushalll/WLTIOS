@@ -1,0 +1,36 @@
+[arch] Section 2 partial: 64-bit KeyVaultPD builds + runs, UIO kernel rebuild timed out
+
+Section 2 status: PARTIAL — KeyVaultPD on 64-bit builds and runs, but IPC
+test blocked by missing CONFIG_UIO in the kernel (rebuild timed out).
+
+What WAS achieved:
+- 64-bit seL4 + KeyVaultPD builds: 424/424 ninja targets
+- KeyVaultPD component runs on 64-bit: [key-vault-pd] alive in serial log
+- 2GB physical memory available (4x the 32-bit 503MB limit)
+- NO memory errors (the 32-bit blocker is completely eliminated)
+- Linux guest boots to userspace (reaches buildroot login)
+- Userspace tools (dataport_write, dataport_read, emits_event_emit,
+  consumes_event_wait) compiled for 64-bit (static ELF x86-64)
+- Kernel module (connection.ko) compiled for 64-bit (ELF 64-bit relocatable)
+- Rootfs repacked with tools + module + S90 test script
+
+What BLOCKS the IPC test:
+- The 64-bit kernel (Linux 4.8.16) has CONFIG_UIO not set
+- The connection.ko module uses UIO functions (uio_register_device, etc.)
+- Module won't load without UIO support in the kernel
+- Fix: rebuild kernel with CONFIG_UIO=y (attempted but timed out — kernel
+  build takes 5-10 min, the MCPilot call timed out before it completed)
+
+What changed for the 64-bit port (Section 2.3):
+- app_settings.cmake: KernelSel4Arch ia32 -> x86_64
+- Added: KernelX86_64VTX64BitGuests ON, LibSel4VMMUseHPET ON
+- QEMU: qemu-system-i386 -> qemu-system-x86_64, -cpu host,+vmx
+- No CAmkES source changes needed (assembly is arch-independent)
+- Additional: compiled userspace connector-apps for x86-64
+- Additional: compiled connection.ko kernel module for x86-64
+- Still needed: rebuild kernel with CONFIG_UIO=y
+
+Section 3: NOT started (Section 2 not fully landed).
+
+Next session: rebuild the 64-bit kernel with CONFIG_UIO=y, repack rootfs,
+and verify the full ping/pong round-trip on 64-bit seL4.
