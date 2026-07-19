@@ -95,6 +95,13 @@ if [ -d "$GUARDIAN_SRC" ] && [ -x "$GUARDIAN_SRC/build/guardian" ]; then
     cp -f "$GUARDIAN_SRC/local-deps/usr/lib/x86_64-linux-gnu/libzstd.so"* "$OUT_DIR/etc/wlt/guardian/lib/" 2>/dev/null || true
     cp -f "$GUARDIAN_SRC/local-deps/usr/lib/x86_64-linux-gnu/libjitterentropy.so"* "$OUT_DIR/etc/wlt/guardian/lib/" 2>/dev/null || true
     echo "guardian shared libs: $?" >> $LOG
+    # Install guardian config (absolute paths — without it, guardian uses
+    # relative paths like signatures/fim.db that fail at runtime)
+    mkdir -p "$OUT_DIR/etc/wlt/guardian"
+    if [ -f "${WLTIOS_SRC}/userspace/wlt-init/rootfs/etc/wlt/guardian/guardian.conf" ]; then
+        cp "${WLTIOS_SRC}/userspace/wlt-init/rootfs/etc/wlt/guardian/guardian.conf" "$OUT_DIR/etc/wlt/guardian/"
+        echo "guardian config installed" >> $LOG
+    fi
 else
     echo "guardian: source or binary not found, skipping" >> $LOG
 fi

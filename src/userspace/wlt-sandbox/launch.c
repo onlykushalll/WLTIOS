@@ -308,22 +308,26 @@ wlt_sandbox_launch(wlt_SandboxManager *m, const char *manifest_path,
         return WLT_SANDBOX_ERR_INVALID_ARG;
 
     wlt_sandbox_error_t e;
-    wlt_SandboxApp *app = prepare_app_slot(m, manifest_path, &e);
-    if (app == NULL)
-        return e;
 
     /* --- Permission check (wlt-permissions, C.2) ---
-     * One real enforcement point: the NETWORK permission. If the
-     * app is registered with the permission manager and its network
-     * grant is DENY while the manifest requests network access
-     * (tor-only or direct), block the launch. Unregistered apps
-     * pass through with an audit log so the desktop keeps working
-     * during the permissions rollout. */
+     * Check BEFORE cgroup setup so the denial fires even without root.
+     * Loads the manifest inline to get app_id + network mode, then
+     * checks the grant file. If DENY + manifest requests network,
+     * block immediately. Unregistered apps pass through with audit log. */
     {
+        wlt_SandboxManifest mfst;
+        wlt_manifest_error_t me = wlt_manifest_load(manifest_path, &mfst);
+        if (me != WLT_MANIFEST_OK) {
+            WLT_LAUNCH_LOG_ERR("manifest load failed: %s", manifest_path);
+            return WLT_SANDBOX_ERR_MANIFEST;
+        }
+
         static wlt_PermsManager perms;
         static int perms_inited = 0;
         if (!perms_inited) {
-            if (wlt_perms_init(&perms, WLT_PERMS_GRANTS_DIR) == WLT_PERMS_OK) {
+            const char *grants_dir = getenv("WLT_PERMS_GRANTS_DIR");
+            if (!grants_dir) grants_dir = WLT_PERMS_GRANTS_DIR;
+            if (wlt_perms_init(&perms, grants_dir) == WLT_PERMS_OK) {
                 perms_inited = 1;
             } else {
                 WLT_LAUNCH_LOG_WRN("permission manager init failed; "
@@ -331,34 +335,45 @@ wlt_sandbox_launch(wlt_SandboxManager *m, const char *manifest_path,
             }
         }
         if (perms_inited) {
-            /* Load this app's grants from disk, then check. */
-            wlt_perms_load(&perms, app->id);
-            wlt_PermsApp *papp = wlt_perms_find(&perms, app->id);
+            /* Register the app first (loads manifest into manager),
+             * then load its grants from disk. wlt_perms_register is
+             * idempotent if already registered. */
+            wlt_PermsManifest pmfst;
+            wlt_perms_manifest_default(&pmfst);
+            snprintf(pmfst.name, sizeof(pmfst.name), "%s", mfst.name);
+            pmfst.values[WLT_PERM_NETWORK] = WLT_PERMS_NET_TOR_ONLY;
+            pmfst.declared_mask |= (1u << WLT_PERM_NETWORK);
+            wlt_perms_register(&perms, &pmfst);
+            wlt_perms_load(&perms, mfst.name);
+            wlt_PermsApp *papp = wlt_perms_find(&perms, mfst.name);
             if (papp != NULL) {
                 wlt_perms_decision_t d =
-                    wlt_perms_check(&perms, app->id, WLT_PERM_NETWORK);
+                    wlt_perms_check(&perms, mfst.name, WLT_PERM_NETWORK);
                 if (d == WLT_PERMS_DECISION_DENY &&
-                    app->manifest.network != WLT_NET_NONE) {
+                    mfst.network != WLT_NET_NONE) {
                     WLT_LAUNCH_LOG_ERR("PERMISSION DENIED: %s requests network "
                                        "(%s) but grant is DENY",
-                                       app->id,
-                                       wlt_manifest_net_str(app->manifest.network));
-                    wlt_perms_audit_log(WLT_PERMS_AUDIT_DENIED, app->id,
+                                       mfst.name,
+                                       wlt_manifest_net_str(mfst.network));
+                    wlt_perms_audit_log(WLT_PERMS_AUDIT_DENIED, mfst.name,
                                         WLT_PERM_NETWORK, "launch", "system",
                                         "network denied");
-                    wlt_sandbox_teardown(app);
                     return WLT_SANDBOX_ERR_PERMISSION;
                 }
-                wlt_perms_audit_log(WLT_PERMS_AUDIT_GRANTED, app->id,
+                wlt_perms_audit_log(WLT_PERMS_AUDIT_GRANTED, mfst.name,
                                     WLT_PERM_NETWORK, "launch", "system",
                                     wlt_perms_decision_str(d));
             } else {
-                wlt_perms_audit_log(WLT_PERMS_AUDIT_INFO, app->id,
+                wlt_perms_audit_log(WLT_PERMS_AUDIT_INFO, mfst.name,
                                     WLT_PERM_NETWORK, "launch", "system",
                                     "unregistered app");
             }
         }
     }
+
+    wlt_SandboxApp *app = prepare_app_slot(m, manifest_path, &e);
+    if (app == NULL)
+        return e;
 
     char user_home[WLT_SANDBOX_MAX_PATH];
     resolve_user_home(user_home_in, user_home, sizeof(user_home));
