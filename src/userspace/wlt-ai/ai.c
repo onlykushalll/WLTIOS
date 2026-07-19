@@ -24,6 +24,7 @@
 #include <ctype.h>
 #include <errno.h>
 
+#include "curl_compat.h"
 #include "wlt_http.h"
 
 /* ------------------------------------------------------------------ */
@@ -41,7 +42,7 @@ typedef struct {
 struct wlt_ai_ctx {
     wlt_ai_config_t     config;
     wlt_ai_history_t    history;
-    int http_dummy;
+    CURL               *curl;
     bool                initialized;
 };
 
@@ -110,9 +111,10 @@ wlt_ai_init(const wlt_ai_config_t *cfg)
     ctx->history.count = 0;
     ctx->history.head = 0;
 
-    
-    if (0) {
-        fprintf(stderr, "wlt-ai: init OK (no curl needed)\n");
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    ctx->curl = curl_easy_init();
+    if (ctx->curl == NULL) {
+        fprintf(stderr, "wlt-ai: curl init failed\n");
         free(ctx);
         return NULL;
     }
@@ -152,9 +154,10 @@ wlt_ai_shutdown(wlt_ai_ctx_t *ctx)
         wlt_memory_clear();
     }
 
-    if (0) {
-        
+    if (ctx->curl) {
+        curl_easy_cleanup(ctx->curl);
     }
+    curl_global_cleanup();
 
     memset(ctx, 0, sizeof(*ctx));
     free(ctx);
@@ -401,8 +404,10 @@ wlt_llm_call_local(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
                    char *response, size_t resp_len)
 {
     char json_body[8192];
-    char resp_buf[16384] = {0};
-    int http_code;
+    struct curl_slist *headers = NULL;
+    wlt_buf_t resp_buf = {0};
+    long http_code = 0;
+    CURLcode rc;
 
     if (ctx->config.local_llm_endpoint[0] == '\0') {
         fprintf(stderr, "wlt-ai: no local LLM endpoint configured\n");
@@ -412,16 +417,32 @@ wlt_llm_call_local(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
     /* Build the OpenAI-compatible chat completions JSON */
     wlt_build_chat_json(history, NULL, json_body, sizeof(json_body));
 
-    http_code = wlt_http_post(ctx->config.local_llm_endpoint, json_body,
-                              "application/json", resp_buf, sizeof(resp_buf), 30);
+    headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    if (http_code < 0) {
-        fprintf(stderr, "wlt-ai: local LLM connection error\n");
+    curl_easy_reset(ctx->curl);
+    curl_easy_setopt(ctx->curl, CURLOPT_URL,
+                     ctx->config.local_llm_endpoint);
+    curl_easy_setopt(ctx->curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDS, json_body);
+    curl_easy_setopt(ctx->curl, CURLOPT_WRITEFUNCTION,
+                     wlt_curl_write_cb);
+    curl_easy_setopt(ctx->curl, CURLOPT_WRITEDATA, &resp_buf);
+    curl_easy_setopt(ctx->curl, CURLOPT_TIMEOUT, 30L);
+
+    rc = curl_easy_perform(ctx->curl);
+    curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+
+    if (rc != CURLE_OK) {
+        fprintf(stderr, "wlt-ai: local LLM curl error: %s\n",
+                curl_easy_strerror(rc));
+        wlt_buf_free(&resp_buf);
         return WLT_AI_ERR_NETWORK;
     }
 
-    if (http_code != 200) {
-        fprintf(stderr, "wlt-ai: local LLM HTTP %d\n", http_code);
+    if (http_code != 200 || resp_buf == NULL) {
+        fprintf(stderr, "wlt-ai: local LLM HTTP %ld\n", http_code);
+        wlt_buf_free(&resp_buf);
         return WLT_AI_ERR_MODEL;
     }
 
@@ -433,7 +454,7 @@ wlt_llm_call_local(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
         response[resp_len - 1] = '\0';
     }
 
-    
+    wlt_buf_free(&resp_buf);
     return WLT_AI_OK;
 }
 
@@ -449,9 +470,9 @@ wlt_llm_call_cloud(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
     char url[WLT_AI_ENDPOINT_LEN + WLT_AI_API_KEY_LEN + 32];
     struct curl_slist *headers = NULL;
     char auth_header[512];
-    
+    wlt_buf_t resp_buf = {0};
     long http_code = 0;
-    
+    CURLcode rc;
 
     if (ctx->config.cloud_provider == WLT_AI_CLOUD_NONE ||
         ctx->config.cloud_api_key[0] == '\0') {
@@ -476,19 +497,49 @@ wlt_llm_call_cloud(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
                      : "https://api.anthropic.com");
         snprintf(auth_header, sizeof(auth_header),
                  "x-api-key: %s", ctx->config.cloud_api_key);
-        /* cloud LLM curl calls removed — use wlt_http_post */
-    http_code = wlt_http_post(url, json_body, "application/json", resp_buf, sizeof(resp_buf), 30);
+        headers = curl_slist_append(headers, auth_header);
+        headers = curl_slist_append(headers,
+                                    "anthropic-version: 2023-06-01");
+        break;
+    case WLT_AI_CLOUD_GLM:
+        snprintf(url, sizeof(url), "%s/v1/chat/completions",
+                 ctx->config.cloud_endpoint[0]
+                     ? ctx->config.cloud_endpoint
+                     : "https://open.bigmodel.cn/api/paas");
+        snprintf(auth_header, sizeof(auth_header),
+                 "Authorization: Bearer %s",
+                 ctx->config.cloud_api_key);
+        headers = curl_slist_append(headers, auth_header);
+        break;
+    default:
+        return WLT_AI_ERR_CONFIG;
+    }
 
-    if (http_code < 0) {
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_reset(ctx->curl);
+    curl_easy_setopt(ctx->curl, CURLOPT_URL, url);
+    curl_easy_setopt(ctx->curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDS, json_body);
+    curl_easy_setopt(ctx->curl, CURLOPT_WRITEFUNCTION,
+                     wlt_curl_write_cb);
+    curl_easy_setopt(ctx->curl, CURLOPT_WRITEDATA, &resp_buf);
+    curl_easy_setopt(ctx->curl, CURLOPT_TIMEOUT, 30L);
+
+    rc = curl_easy_perform(ctx->curl);
+    curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+
+    if (rc != CURLE_OK) {
         fprintf(stderr, "wlt-ai: cloud LLM curl error: %s\n",
-                "error");
-        
+                curl_easy_strerror(rc));
+        wlt_buf_free(&resp_buf);
         return WLT_AI_ERR_NETWORK;
     }
 
     if (http_code != 200 || resp_buf == NULL) {
         fprintf(stderr, "wlt-ai: cloud LLM HTTP %ld\n", http_code);
-        
+        wlt_buf_free(&resp_buf);
         return WLT_AI_ERR_MODEL;
     }
 
@@ -501,7 +552,7 @@ wlt_llm_call_cloud(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
         response[resp_len - 1] = '\0';
     }
 
-    
+    wlt_buf_free(&resp_buf);
     return WLT_AI_OK;
 }
 
@@ -515,9 +566,9 @@ wlt_stt_transcribe(wlt_ai_ctx_t *ctx, const uint8_t *audio,
 {
     char url[WLT_AI_ENDPOINT_LEN + 64];
     struct curl_slist *headers = NULL;
-    
+    wlt_buf_t resp_buf = {0};
     long http_code = 0;
-    
+    CURLcode rc;
 
     if (ctx->config.local_stt_endpoint[0] == '\0') {
         fprintf(stderr, "wlt-ai: no STT endpoint configured\n");
@@ -527,11 +578,26 @@ wlt_stt_transcribe(wlt_ai_ctx_t *ctx, const uint8_t *audio,
     snprintf(url, sizeof(url), "%s/v1/audio/transcriptions",
              ctx->config.local_stt_endpoint);
 
-    /* cloud LLM curl calls removed — use wlt_http_post */
-    http_code = wlt_http_post(url, json_body, "application/json", resp_buf, sizeof(resp_buf), 30);
+    headers = curl_slist_append(headers,
+                                "Content-Type: application/octet-stream");
 
-    if (http_code < 0 || http_code != 200 || resp_buf == NULL) {
-        
+    curl_easy_reset(ctx->curl);
+    curl_easy_setopt(ctx->curl, CURLOPT_URL, url);
+    curl_easy_setopt(ctx->curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDS, (const char *)audio);
+    curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDSIZE,
+                     (long)audio_len);
+    curl_easy_setopt(ctx->curl, CURLOPT_WRITEFUNCTION,
+                     wlt_curl_write_cb);
+    curl_easy_setopt(ctx->curl, CURLOPT_WRITEDATA, &resp_buf);
+    curl_easy_setopt(ctx->curl, CURLOPT_TIMEOUT, 15L);
+
+    rc = curl_easy_perform(ctx->curl);
+    curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+
+    if (rc != CURLE_OK || http_code != 200 || resp_buf == NULL) {
+        wlt_buf_free(&resp_buf);
         return WLT_AI_ERR_MODEL;
     }
 
@@ -541,7 +607,7 @@ wlt_stt_transcribe(wlt_ai_ctx_t *ctx, const uint8_t *audio,
         text[text_len - 1] = '\0';
     }
 
-    
+    wlt_buf_free(&resp_buf);
     return WLT_AI_OK;
 }
 
@@ -556,7 +622,7 @@ wlt_tts_speak(wlt_ai_ctx_t *ctx, const char *text)
     char json_body[WLT_AI_MAX_MSG_LEN + 64];
     struct curl_slist *headers = NULL;
     long http_code = 0;
-    
+    CURLcode rc;
     char escaped[WLT_AI_MAX_MSG_LEN];
 
     if (ctx->config.local_tts_endpoint[0] == '\0') {
@@ -569,10 +635,19 @@ wlt_tts_speak(wlt_ai_ctx_t *ctx, const char *text)
 
     snprintf(url, sizeof(url), "%s/v1/tts", ctx->config.local_tts_endpoint);
 
-    /* cloud LLM curl calls removed — use wlt_http_post */
-    http_code = wlt_http_post(url, json_body, "application/json", resp_buf, sizeof(resp_buf), 30);
+    headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    if (http_code < 0 || http_code != 200) {
+    curl_easy_reset(ctx->curl);
+    curl_easy_setopt(ctx->curl, CURLOPT_URL, url);
+    curl_easy_setopt(ctx->curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDS, json_body);
+    curl_easy_setopt(ctx->curl, CURLOPT_TIMEOUT, 10L);
+
+    rc = curl_easy_perform(ctx->curl);
+    curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+
+    if (rc != CURLE_OK || http_code != 200) {
         return WLT_AI_ERR_MODEL;
     }
 
