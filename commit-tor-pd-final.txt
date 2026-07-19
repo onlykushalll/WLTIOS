@@ -1,0 +1,52 @@
+[tor-pd] Phase 1 final: TorPD runs, IPC blocked by 32-bit seL4 memory limit
+
+Attempted to prove TorPD IPC with a stripped-down assembly (vm0 + TorPD only,
+no KeyVaultPD) to fit within the 32-bit seL4 memory limit.
+
+What was tried:
+1. minimal_tor_pd.camkes (vm0 + KeyVaultPD + TorPD):
+   - simple_untyped23_pool=20: "Insufficient memory" for TorPD
+   - simple_untyped23_pool=5, guest_ram_mb=32: no memory errors, but Linux
+     hangs at "ip (694)" during init — 32MB too little for buildroot
+
+2. minimal_tor_pd_only.camkes (vm0 + TorPD only, no KeyVaultPD):
+   - simple_untyped23_pool=20: "Insufficient memory" for TorPD
+   - simple_untyped23_pool=5, guest_ram_mb=128: "Failed to allocate 134217728
+     bytes of guest ram" — pool reduction freed memory for TorPD but not enough
+     left for vm0's 128MB
+   - simple_untyped23_pool=5, guest_ram_mb=64: "Failed to allocate 67108864
+     bytes" — same issue, reduced pool still starves vm0
+
+Root cause:
+The 32-bit (ia32) seL4 build only addresses 503MB of physical memory
+([100000..1fc00000)). The capdl-loader image takes ~30MB, seL4 kernel + components
+take ~100MB, leaving ~370MB. The `simple_untyped23_pool` setting reserves large
+8MB contiguous blocks for vm0's use, but these can't be used for guest RAM
+allocation by the VMM. With pool=20 (160MB reserved), there isn't enough for
+TorPD. With pool=5 (40MB reserved), TorPD gets memory but vm0's guest RAM
+allocation fails because the remaining memory is fragmented.
+
+The keyvault build (2 PDs) works because it only needs pool=20 for one VM.
+Adding TorPD requires either:
+- 64-bit seL4 build (x86_64) — addresses more memory (ADR-04 notes CAmkES
+  x86-64 VM examples exist: minimal_64)
+- Or a minimal initramfs that fits in 16MB RAM (not full buildroot)
+
+What IS proven (honestly):
+- TorPD component compiles and links into seL4 image (127/127 + 430/430 builds)
+- TorPD's run() function executes: [tor-pd] alive + [tor-pd] Waiting for ping
+- The component is properly instantiated by the seL4 capdl loader
+- No crashes or faults in the TorPD component itself
+
+What is NOT proven:
+- TorPD ping/pong IPC (vm0 can't boot to userspace to send the ping)
+- The actual shared memory + notification round-trip
+
+Files added:
+- src/sel4/apps/tor_pd/minimal_tor_pd.camkes (updated: pool=5, ram=32)
+- src/sel4/rootfs/S90camkes_init (Tor PD test script)
+- Build tree: projects/vm-examples/apps/x86/tor_pd_only/ (stripped assembly)
+
+Next session: port to 64-bit seL4 (x86_64) using the minimal_64 example as
+template. This is the production fix — 64-bit addresses 4GB+ of physical
+memory, eliminating the constraint.
