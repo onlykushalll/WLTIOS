@@ -404,10 +404,8 @@ wlt_llm_call_local(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
                    char *response, size_t resp_len)
 {
     char json_body[8192];
-    struct curl_slist *headers = NULL;
-    wlt_buf_t resp_buf = {0};
-    long http_code = 0;
-    CURLcode rc;
+    char resp_buf[16384] = {0};
+    int http_code;
 
     if (ctx->config.local_llm_endpoint[0] == '\0') {
         fprintf(stderr, "wlt-ai: no local LLM endpoint configured\n");
@@ -417,32 +415,16 @@ wlt_llm_call_local(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
     /* Build the OpenAI-compatible chat completions JSON */
     wlt_build_chat_json(history, NULL, json_body, sizeof(json_body));
 
-    headers = curl_slist_append(headers, "Content-Type: application/json");
+    http_code = wlt_http_post(ctx->config.local_llm_endpoint, json_body,
+                              "application/json", resp_buf, sizeof(resp_buf), 30);
 
-    curl_easy_reset(ctx->curl);
-    curl_easy_setopt(ctx->curl, CURLOPT_URL,
-                     ctx->config.local_llm_endpoint);
-    curl_easy_setopt(ctx->curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDS, json_body);
-    curl_easy_setopt(ctx->curl, CURLOPT_WRITEFUNCTION,
-                     wlt_curl_write_cb);
-    curl_easy_setopt(ctx->curl, CURLOPT_WRITEDATA, &resp_buf);
-    curl_easy_setopt(ctx->curl, CURLOPT_TIMEOUT, 30L);
-
-    rc = curl_easy_perform(ctx->curl);
-    curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_slist_free_all(headers);
-
-    if (rc != CURLE_OK) {
-        fprintf(stderr, "wlt-ai: local LLM curl error: %s\n",
-                curl_easy_strerror(rc));
-        wlt_buf_free(&resp_buf);
+    if (http_code < 0) {
+        fprintf(stderr, "wlt-ai: local LLM connection error\n");
         return WLT_AI_ERR_NETWORK;
     }
 
-    if (http_code != 200 || resp_buf == NULL) {
-        fprintf(stderr, "wlt-ai: local LLM HTTP %ld\n", http_code);
-        wlt_buf_free(&resp_buf);
+    if (http_code != 200) {
+        fprintf(stderr, "wlt-ai: local LLM HTTP %d\n", http_code);
         return WLT_AI_ERR_MODEL;
     }
 
@@ -454,7 +436,6 @@ wlt_llm_call_local(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
         response[resp_len - 1] = '\0';
     }
 
-    wlt_buf_free(&resp_buf);
     return WLT_AI_OK;
 }
 
@@ -470,8 +451,8 @@ wlt_llm_call_cloud(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
     char url[WLT_AI_ENDPOINT_LEN + WLT_AI_API_KEY_LEN + 32];
     struct curl_slist *headers = NULL;
     char auth_header[512];
-    wlt_buf_t resp_buf = {0};
-    long http_code = 0;
+    char resp_buf[16384] = {0};
+    int http_code;
     CURLcode rc;
 
     if (ctx->config.cloud_provider == WLT_AI_CLOUD_NONE ||
@@ -533,13 +514,11 @@ wlt_llm_call_cloud(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
     if (rc != CURLE_OK) {
         fprintf(stderr, "wlt-ai: cloud LLM curl error: %s\n",
                 curl_easy_strerror(rc));
-        wlt_buf_free(&resp_buf);
         return WLT_AI_ERR_NETWORK;
     }
 
-    if (http_code != 200 || resp_buf == NULL) {
+    if (http_code != 200 || 0) {
         fprintf(stderr, "wlt-ai: cloud LLM HTTP %ld\n", http_code);
-        wlt_buf_free(&resp_buf);
         return WLT_AI_ERR_MODEL;
     }
 
@@ -552,7 +531,6 @@ wlt_llm_call_cloud(wlt_ai_ctx_t *ctx, const wlt_ai_history_t *history,
         response[resp_len - 1] = '\0';
     }
 
-    wlt_buf_free(&resp_buf);
     return WLT_AI_OK;
 }
 
@@ -566,8 +544,8 @@ wlt_stt_transcribe(wlt_ai_ctx_t *ctx, const uint8_t *audio,
 {
     char url[WLT_AI_ENDPOINT_LEN + 64];
     struct curl_slist *headers = NULL;
-    wlt_buf_t resp_buf = {0};
-    long http_code = 0;
+    char resp_buf[16384] = {0};
+    int http_code;
     CURLcode rc;
 
     if (ctx->config.local_stt_endpoint[0] == '\0') {
@@ -596,8 +574,7 @@ wlt_stt_transcribe(wlt_ai_ctx_t *ctx, const uint8_t *audio,
     curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_slist_free_all(headers);
 
-    if (rc != CURLE_OK || http_code != 200 || resp_buf == NULL) {
-        wlt_buf_free(&resp_buf);
+    if (rc != CURLE_OK || http_code != 200 || 0) {
         return WLT_AI_ERR_MODEL;
     }
 
@@ -607,7 +584,6 @@ wlt_stt_transcribe(wlt_ai_ctx_t *ctx, const uint8_t *audio,
         text[text_len - 1] = '\0';
     }
 
-    wlt_buf_free(&resp_buf);
     return WLT_AI_OK;
 }
 
@@ -621,7 +597,7 @@ wlt_tts_speak(wlt_ai_ctx_t *ctx, const char *text)
     char url[WLT_AI_ENDPOINT_LEN + 64];
     char json_body[WLT_AI_MAX_MSG_LEN + 64];
     struct curl_slist *headers = NULL;
-    long http_code = 0;
+    int http_code;
     CURLcode rc;
     char escaped[WLT_AI_MAX_MSG_LEN];
 
