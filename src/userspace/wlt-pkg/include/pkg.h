@@ -72,6 +72,14 @@ wlt_pkg_error_t wlt_pkg_list(wlt_pkg_database_t *db);
 wlt_pkg_error_t wlt_pkg_search(const char *query, wlt_pkg_database_t *results);
 wlt_pkg_error_t wlt_pkg_info(const char *name, wlt_pkg_package_t *pkg);
 
+/* Dependency resolution (dependency.c) */
+wlt_pkg_error_t wlt_pkg_resolve_dependencies(const char *package_name,
+                                              char resolved[][WLT_PKG_MAX_NAME],
+                                              size_t *count, size_t max_count);
+wlt_pkg_error_t wlt_pkg_check_conflicts(const char *package_name,
+                                         char *conflict_name, size_t max_len);
+bool wlt_pkg_is_installed(const char *name);
+
 wlt_pkg_error_t wlt_pkg_check_updates(char *updates, size_t max_count);
 
 const char *wlt_pkg_error_str(wlt_pkg_error_t err);

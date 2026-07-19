@@ -1,7 +1,7 @@
 # WLT-Pkg Makefile
 
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -std=gnu11 -O2 -Iinclude
+CFLAGS = -Wall -Wextra -Werror -Wno-format-truncation -Wno-stringop-truncation -std=gnu11 -O2 -Iinclude
 
 SRCS = pkg.c store.c transaction.c download.c verify.c dependency.c
 OBJS = $(SRCS:.c=.o)

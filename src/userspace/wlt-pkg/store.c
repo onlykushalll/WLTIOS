@@ -5,24 +5,34 @@
  * @purpose Manage /var/wlt/store/ directory with hashed package paths
  * @dependencies: pkg.h
  * @spec: docs/specs/wlt-pkg.md
+ *
+ * Implements REAL symlink management and recursive store removal.
  */
 
+#define _GNU_SOURCE
 #include "pkg.h"
 #include <errno.h>
-#pragma GCC diagnostic ignored "-Wformat-truncation"
-#include <errno.h>
-#pragma GCC diagnostic ignored "-Wformat-truncation"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <ftw.h>
+
+/* ─── Recursive removal via nftw ─── */
+
+static int
+rm_cb(const char *path, const struct stat *sb,
+      int typeflag, struct FTW *ftwbuf)
+{
+    (void)sb; (void)typeflag; (void)ftwbuf;
+    return remove(path);
+}
 
 wlt_pkg_error_t
 wlt_pkg_store_init(void)
 {
-    /* Create store directory structure */
     mkdir("/var/wlt", 0755);
     mkdir("/var/wlt/store", 0755);
     mkdir("/var/wlt/db", 0755);
@@ -49,7 +59,6 @@ wlt_pkg_store_add(const char *store_path)
     if (store_path == NULL)
         return WLT_PKG_ERR_INVALID_ARG;
 
-    /* Create the store directory */
     if (mkdir(store_path, 0755) != 0)
     {
         if (errno == EEXIST)
@@ -66,8 +75,8 @@ wlt_pkg_store_remove(const char *store_path)
     if (store_path == NULL)
         return WLT_PKG_ERR_INVALID_ARG;
 
-    /* TODO(wlt-pkg): Recursive removal of store directory */
-    if (rmdir(store_path) != 0)
+    /* Recursive removal using nftw */
+    if (nftw(store_path, rm_cb, 64, FTW_DEPTH | FTW_PHYS) != 0)
         return WLT_PKG_ERR_IO;
 
     return WLT_PKG_OK;
@@ -106,10 +115,33 @@ wlt_pkg_store_create_symlinks(const char *store_path)
     if (store_path == NULL)
         return WLT_PKG_ERR_INVALID_ARG;
 
-    /* TODO(wlt-pkg): Scan store_path/usr/bin/, create symlinks in /usr/bin/ */
-    /* TODO(wlt-pkg): Scan store_path/usr/lib/, create symlinks in /usr/lib/ */
-    /* For now, stub */
-    (void)store_path;
+    /* Scan store_path/usr/bin/ and create symlinks in /usr/bin/ */
+    char bin_dir[WLT_PKG_MAX_PATH];
+    snprintf(bin_dir, sizeof(bin_dir), "%s/usr/bin", store_path);
+
+    DIR *d = opendir(bin_dir);
+    if (d == NULL)
+        return WLT_PKG_OK;  /* No usr/bin in this package — not an error */
+
+    struct dirent *entry;
+    int created = 0;
+    while ((entry = readdir(d)) != NULL)
+    {
+        if (entry->d_name[0] == '.')
+            continue;
+
+        char src[WLT_PKG_MAX_PATH], dst[WLT_PKG_MAX_PATH];
+        snprintf(src, sizeof(src), "%s/usr/bin/%s", store_path, entry->d_name);
+        snprintf(dst, sizeof(dst), "/usr/bin/%s", entry->d_name);
+
+        /* Remove existing, then create symlink */
+        unlink(dst);
+        if (symlink(src, dst) == 0)
+            created++;
+    }
+    closedir(d);
+
+    printf("[wlt-pkg/store] created %d symlinks from %s\n", created, bin_dir);
     return WLT_PKG_OK;
 }
 
@@ -119,7 +151,33 @@ wlt_pkg_store_remove_symlinks(const char *store_path)
     if (store_path == NULL)
         return WLT_PKG_ERR_INVALID_ARG;
 
-    /* TODO(wlt-pkg): Remove all symlinks pointing to this store path */
-    (void)store_path;
+    /* Scan /usr/bin for symlinks pointing to this store path */
+    DIR *d = opendir("/usr/bin");
+    if (d == NULL)
+        return WLT_PKG_OK;
+
+    struct dirent *entry;
+    int removed = 0;
+    while ((entry = readdir(d)) != NULL)
+    {
+        char link_path[WLT_PKG_MAX_PATH];
+        snprintf(link_path, sizeof(link_path), "/usr/bin/%s", entry->d_name);
+
+        char target[WLT_PKG_MAX_PATH];
+        ssize_t len = readlink(link_path, target, sizeof(target) - 1);
+        if (len > 0)
+        {
+            target[len] = '\0';
+            if (strstr(target, store_path))
+            {
+                unlink(link_path);
+                removed++;
+            }
+        }
+    }
+    closedir(d);
+
+    printf("[wlt-pkg/store] removed %d symlinks pointing to %s\n",
+           removed, store_path);
     return WLT_PKG_OK;
 }

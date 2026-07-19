@@ -96,6 +96,19 @@ if [ $? -ne 0 ]; then echo "WLTTOR FAILED (non-fatal)"; else
 fi
 cd $REPO
 
+echo "=== STEP 9.3: build libwlt-pkg.a ==="
+PKG=$REPO/src/userspace/wlt-pkg
+cd $PKG
+make clean 2>/dev/null || true
+make 2>&1
+if [ $? -ne 0 ]; then echo "WLT-PKG FAILED (non-fatal)"; else
+    cp libwlt-pkg.a $ROOTFS/usr/lib/ 2>/dev/null || true
+    mkdir -p $ROOTFS/usr/include/wlt-pkg
+    cp include/pkg.h $ROOTFS/usr/include/wlt-pkg/ 2>/dev/null || true
+    echo "libwlt-pkg OK"
+fi
+cd $REPO
+
 echo "=== STEP 9.5: build libwlt-permissions.a + libwlt-sandbox.a ==="
 PERMS=$REPO/src/userspace/wlt-permissions
 SANDBOX=$REPO/src/userspace/wlt-sandbox
