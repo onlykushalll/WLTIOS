@@ -1,0 +1,98 @@
+/*
+ * minimal_tor_pd.camkes — Minimal VM + Key Vault PD + Tor PD
+ *
+ * This extends minimal_keyvault.camkes by adding a TorPD component
+ * alongside the existing Linux VM (vm0) and KeyVaultPD. The TorPD
+ * runs in its own seL4 protection domain, separate from both the
+ * Linux VM and the Key Vault.
+ *
+ * Phase 1: ping/pong IPC proof between vm0 and TorPD
+ * Phase 2 (future): TorPD becomes a second Linux guest (vm1)
+ *
+ * Spec: docs/specs/wlt-tor-pd.md
+ * ADR: docs/adr/09-tor-pd-scaffold.md
+ */
+
+import <VM/vm.camkes>;
+
+#include <configurations/vm.h>
+
+#define VM_GUEST_CMDLINE "earlyprintk=ttyS0,115200 console=ttyS0,115200 i8042.nokbd=y i8042.nomux=y \
+i8042.noaux=y io_delay=udelay noisapnp pci=nomsi debug root=/dev/mem"
+
+/* Import the KeyVaultPD and TorPD component declarations */
+import <KeyVaultPD/KeyVaultPD.camkes>;
+import <TorPD/TorPD.camkes>;
+
+component Init0 {
+    dataport Buf(4096) kv_src_dp;
+    dataport Buf(4096) kv_dest_dp;
+    emits Ready kv_ready;
+    consumes Done kv_done;
+
+    /* Tor PD shared memory + notifications */
+    dataport Buf(4096) tor_src_dp;
+    dataport Buf(4096) tor_dest_dp;
+    emits Ready tor_ready;
+    consumes Done tor_done;
+
+    VM_INIT_DEF()
+}
+
+assembly {
+    composition {
+        VM_COMPOSITION_DEF()
+        VM_PER_VM_COMP_DEF(0)
+
+        /* Key Vault protection domain — separate from the Linux VM */
+        component KeyVaultPD key_vault;
+
+        /* Tor protection domain — separate from both the Linux VM and Key Vault */
+        component TorPD tor_pd;
+
+        /* Shared memory connections between VM and KeyVaultPD */
+        connection seL4SharedDataWithCaps kv_conn_src(from key_vault.src_dp,
+                                                       to vm0.kv_src_dp);
+        connection seL4SharedDataWithCaps kv_conn_dest(from key_vault.dest_dp,
+                                                         to vm0.kv_dest_dp);
+
+        /* Notification connections for KeyVaultPD synchronization */
+        connection seL4Notification kv_ready_conn(from vm0.kv_ready,
+                                                   to key_vault.ready);
+        connection seL4Notification kv_done_conn(from key_vault.done,
+                                                  to vm0.kv_done);
+
+        /* Shared memory connections between VM and TorPD */
+        connection seL4SharedDataWithCaps tor_conn_src(from tor_pd.src_dp,
+                                                        to vm0.tor_src_dp);
+        connection seL4SharedDataWithCaps tor_conn_dest(from tor_pd.dest_dp,
+                                                         to vm0.tor_dest_dp);
+
+        /* Notification connections for TorPD synchronization */
+        connection seL4Notification tor_ready_conn(from vm0.tor_ready,
+                                                    to tor_pd.ready);
+        connection seL4Notification tor_done_conn(from tor_pd.done,
+                                                   to vm0.tor_done);
+
+        /* Serial output for both PDs */
+        connection seL4RPCCall kv_putchar(from key_vault.putchar,
+                                           to serial.processed_putchar);
+        connection seL4RPCCall tor_putchar(from tor_pd.putchar,
+                                            to serial.processed_putchar);
+    }
+
+    configuration {
+        VM_CONFIGURATION_DEF()
+        VM_PER_VM_CONFIG_DEF(0)
+
+        vm0.simple_untyped23_pool = 20;
+        vm0.simple_untyped25_pool = 2;
+        vm0.heap_size = 0x2000000;
+        vm0.guest_ram_mb = 128;
+        vm0.kernel_cmdline = VM_GUEST_CMDLINE;
+        vm0.kernel_image = "bzimage";
+        vm0.kernel_relocs = "bzimage";
+        vm0.initrd_image = "rootfs.cpio";
+        vm0.iospace_domain = 0x0f;
+    }
+}

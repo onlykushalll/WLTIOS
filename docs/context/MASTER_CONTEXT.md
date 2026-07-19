@@ -162,7 +162,7 @@ This is a comprehensive read-only audit framework for web projects. It covers:
 
 ---
 
-## 7. CURRENT VERIFIED STATE (as of 2026-07-12)
+## 7. CURRENT VERIFIED STATE (as of 2026-07-19)
 
 ### Verified (raw evidence, not claims)
 
@@ -180,6 +180,15 @@ This is a comprehensive read-only audit framework for web projects. It covers:
 | Kill switch | Route-based, bidirectionally reversible, audit-logged | 2026-07-04 |
 | MAC randomization | Verified | 2026-06-21 |
 | Amnesia (tmpfs) | Verified | 2026-06-21 |
+| Custom kernel (e1000 built-in) | Linux 5.10.218 built with CONFIG_E1000=y, CONFIG_VIRTIO_NET=y (not modules). No .ko files needed in initramfs. Commit: packages/kernel/wlt-kernel.config + scripts/build-wlt-kernel.sh | 2026-07-19 |
+| Real networking (Tor 100%) | QEMU serial: e1000 eth0 detected, wlt-net brings up 10.0.2.15/24 gw 10.0.2.2, Tor bootstraps to 100% (done). Commit: ab054d6 | 2026-07-19 |
+| Compositor window management | Multi-window desktop: terminal, file manager, launcher, statusbar, settings, kairos all render simultaneously. XDG shell + z-ordering + resize/minimize/maximize. Commits: 264ad7a, 9df6ae8, b664c44 | 2026-07-13 |
+| Kairos AI (in-process) | kairos_window.c calls wlt_ai_query (in-process, no fork+exec). libwlt-ai.a linked. wl_keyboard handling added. AI engine initializes: [kairos] AI engine ready (local LLM). Commit: b5570c5 | 2026-07-19 |
+| AI pipeline (code path) | kairos -> wlt_ai_query -> wlt_llm_call_local -> wlt_http_post -> 10.0.2.2:8080. Mock LLM server returns HTTP response. Connection succeeds (not -1). Commit: 60ba39b | 2026-07-19 |
+| Permissions enforcement (both branches) | DENY test: grant network=deny -> launch returns -5 (PERMISSION). ALLOW test: grant network=tor-only -> launch returns -7 (cgroup, not perm). Both branches proven. Commit: ab054d6 | 2026-07-19 |
+| Guardian FIM fixed | guardian.conf with absolute paths installed. Serial: [fim] initialized (db=/etc/wlt/guardian/fim.db, encrypted=1) [guardian] FIM engine: ready (encrypted=1). Commit: ab054d6 | 2026-07-19 |
+| wlt-pkg real install/remove | 9-step test, 0 failures: create package, install (extract+symlink+db), run binary, verify db, is_installed, remove (symlink+store+db cleanup), verify gone. Commit: 3f0f184 | 2026-07-19 |
+| Reproducible builds | 35 vendored libs (packages/tor-libs + packages/wl-libs), all Makefiles committed, build-all.sh builds all 4 libraries. Clean rebuild test passed. Commits: 1b06c6e through 3f0f184 | 2026-07-19 |
 
 ### Tor fix (honest writeup)
 
@@ -206,12 +215,14 @@ compositor also needed setenv WLR_RENDERER pixman 1 because QEMU virtio-gpu
 does not support EGL/GL contexts - pixman (software rendering) works.
 
 ### What is NOT done
-- Visible desktop with actual windows (terminal, file manager) - compositor renders the desktop background + status bar, but no app windows have been launched or captured yet
-- Tor/Firewall/Boot-Verifier seL4 PDs (only Key Vault PD is verified)
-- Kairos Qwythos-9B upgrade (still 1.5B stand-in)
-- Package repository, Tor Browser, A/B updates
-- Real hardware boot on the Dell Latitude
-- Custom desktop shell (taskbar, launcher, theming - the original pitch feature #1)
+- Tor PD (seL4 isolation of Tor in a second Linux guest VM) — ADR-03 decided on "Tor in second Linux VM" approach, spec + ADR being written. Key Vault PD proved the CAmkES multi-PD pattern works; Tor PD needs the same scaffold + IPC proof. This is the current top priority.
+- Firewall PD — all network traffic should pass through a seL4 partition (enforces Tor-only, kill switch). Not started.
+- Boot Verifier PD — runtime integrity check. Not started.
+- AI end-to-end with real LLM — code path proven via mock server, but no real llama-server model loaded in QEMU (QEMU user-mode networking quirk: guest gets 404 via 10.0.2.2 even though mock returns 200 when curled directly from WSL2 — needs debugging).
+- Kairos Qwen2.5-1.5B upgrade to Qwythos-9B — still 1.5B stand-in.
+- Package repository, Tor Browser, A/B updates — wlt-pkg has real install/remove but no repo/tor browser.
+- Real hardware boot on the Dell Latitude — QEMU-only (user dropped hardware boot).
+- Guardian sig engine — yara rules not compiled (yarac couldn't run due to libyara.so path without root). .yar copied as .yarc fallback.
 
 ### Key file locations (WSL2)
 - seL4 multi-PD build: ~/wltios-build/build-keyvault/

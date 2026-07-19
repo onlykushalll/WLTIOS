@@ -1,0 +1,19 @@
+/*
+ * tor_pd.camkes — CAmkES component declaration for Tor PD
+ *
+ * This declares a seL4 protection domain that will eventually host the
+ * Tor daemon in a second Linux guest VM. Phase 1: ping/pong IPC proof
+ * (mirrors KeyVaultPD's pattern).
+ *
+ * Spec: docs/specs/wlt-tor-pd.md
+ * ADR: docs/adr/09-tor-pd-scaffold.md
+ */
+
+component TorPD {
+    control;
+    consumes Ready ready;
+    emits Done done;
+    dataport Buf(4096) src_dp;
+    dataport Buf(4096) dest_dp;
+    maybe uses PutChar putchar;
+}
