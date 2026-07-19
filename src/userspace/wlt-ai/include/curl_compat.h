@@ -34,7 +34,10 @@ struct curl_slist { char *data; struct curl_slist *next; };
 #define CURLINFO_RESPONSE_CODE 0x200002
 
 /* Function stubs — all return success/empty */
-static inline CURL *curl_easy_init(void) { return NULL; }
+/* Returns non-NULL dummy so wlt_ai_init() doesn't abort.
+ * The local LLM path uses wlt_http_post (raw socket), not curl.
+ * Cloud/STT/TTS paths are stubs that compile but don't execute. */
+static inline CURL *curl_easy_init(void) { return (CURL *)1; }
 static inline void curl_easy_cleanup(CURL *c) { (void)c; }
 static inline void curl_easy_reset(CURL *c) { (void)c; }
 static inline CURLcode curl_easy_setopt(CURL *c, CURLoption o, ...) { (void)c; (void)o; return CURLE_OK; }
