@@ -30,6 +30,7 @@
 #include <sys/wait.h>
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
+#include "ai.h"
 
 /* Kernel font 8x16 (same as terminal) */
 static const uint8_t font8x16[96][16] = {
@@ -161,6 +162,15 @@ static volatile sig_atomic_t running = 1;
 static int configured = 0;
 static int needs_redraw = 1;
 
+/* Keyboard state — needed so send_query() actually receives input */
+static struct wl_seat *seat;
+static struct wl_keyboard *keyboard;
+/* Forward decl: kb_key handler calls send_query before its definition */
+static void send_query(void);
+
+/* AI engine context (in-process, linked against libwlt-ai.a) */
+static wlt_ai_ctx_t *ai_ctx = NULL;
+
 static void on_sig(int s) { (void)s; running = 0; }
 
 /* Wayland listeners (identical pattern to all other clients) */
@@ -169,6 +179,7 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t n, const char *i
     if (!strcmp(i,"wl_compositor")) compositor=wl_registry_bind(r,n,&wl_compositor_interface,1);
     else if (!strcmp(i,"wl_shm")) shm=wl_registry_bind(r,n,&wl_shm_interface,1);
     else if (!strcmp(i,"xdg_wm_base")) xdg_wm_base=wl_registry_bind(r,n,&xdg_wm_base_interface,1);
+    else if (!strcmp(i,"wl_seat")) seat=wl_registry_bind(r,n,&wl_seat_interface,1);
 }
 static void reg_rem(void*d,struct wl_registry*r,uint32_t n){(void)d;(void)r;(void)n;}
 static const struct wl_registry_listener rl={.global=reg_global,.global_remove=reg_rem};
@@ -235,35 +246,33 @@ static void send_query(void) {
     add_chat_line(user_msg);
     add_chat_line("  (querying kairos...)");
 
-    /* Fork kairos CLI */
-    int pipefd[2];
-    if (pipe(pipefd) == 0) {
-        pid_t pid = fork();
-        if (pid == 0) {
-            /* Child: redirect stdout to pipe, exec kairos */
-            close(pipefd[0]);
-            dup2(pipefd[1], STDOUT_FILENO);
-            close(pipefd[1]);
-            execl("/bin/sh", "sh", "-c", input_buf, NULL);
-            _exit(127);
-        }
-        close(pipefd[1]);
+    /* Call the in-process AI engine (libwlt-ai.a).
+     * Replaces the old fork+execl("/bin/sh"...) path - no shell,
+     * no external CLI. wlt_ai_query -> wlt_llm_call_local ->
+     * wlt_http_post (raw socket to 127.0.0.1:8080). */
+    if (ai_ctx == NULL) {
+        add_chat_line("  (AI engine not initialized)");
+    } else {
+        wlt_ai_response_t resp = wlt_ai_query(ai_ctx, input_buf);
 
-        /* Read response */
-        char response[1024] = {0};
-        ssize_t n = read(pipefd[0], response, sizeof(response) - 1);
-        close(pipefd[0]);
-        waitpid(pid, NULL, 0);
-
-        if (n > 0) {
-            /* Split response into lines */
-            char *line = strtok(response, "\n");
+        if (resp.error != WLT_AI_OK) {
+            add_chat_line("  (AI error)");
+        } else if (resp.text[0] != '\0') {
+            /* Split response into lines (COLS-1 chars each) */
+            char buf[WLT_AI_MAX_RESPONSE];
+            strncpy(buf, resp.text, sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+            char *line = strtok(buf, "\n");
             while (line && chat_row < ROWS - 1) {
-                add_chat_line(line);
+                /* Truncate over-long lines to COLS-1 */
+                char row[COLS];
+                strncpy(row, line, COLS - 1);
+                row[COLS - 1] = '\0';
+                add_chat_line(row);
                 line = strtok(NULL, "\n");
             }
         } else {
-            add_chat_line("  (no response)");
+            add_chat_line("  (empty response)");
         }
     }
 
@@ -272,6 +281,56 @@ static void send_query(void) {
     input_buf[0] = '\0';
     needs_redraw = 1;
 }
+
+/* --- Keyboard handling (wl_keyboard listener) ---
+ * Without this, send_query() was dead code — the window never
+ * received keypresses. Now Enter sends the query, Backspace
+ * deletes, and printable chars append to the input buffer.
+ * Uses raw evdev keycodes (no xkb keymap — minimal but works). */
+static void kb_keymap(void*d,struct wl_keyboard*k,uint32_t f,int32_t fd,uint32_t s){
+    (void)d;(void)k;(void)f;(void)s; close(fd); /* no xkb — raw keycodes */
+}
+static void kb_enter(void*d,struct wl_keyboard*k,uint32_t s,struct wl_surface*sf,struct wl_array*keys){(void)d;(void)k;(void)s;(void)sf;(void)keys;}
+static void kb_leave(void*d,struct wl_keyboard*k,uint32_t s,struct wl_surface*sf){(void)d;(void)k;(void)s;(void)sf;}
+static void kb_mod(void*d,struct wl_keyboard*k,uint32_t s,uint32_t dp,uint32_t l,uint32_t g,uint32_t lg){(void)d;(void)k;(void)s;(void)dp;(void)l;(void)g;(void)lg;}
+static void kb_rep(void*d,struct wl_keyboard*k,int32_t r,int32_t dly){(void)d;(void)k;(void)r;(void)dly;}
+
+static void kb_key(void*d,struct wl_keyboard*k,uint32_t serial,
+                   uint32_t time,uint32_t key,uint32_t state){
+    (void)d;(void)k;(void)serial;(void)time;
+    if(state!=WL_KEYBOARD_KEY_STATE_PRESSED) return;
+
+    if(key==28){ /* Enter */
+        send_query();
+    } else if(key==14){ /* Backspace */
+        if(input_len>0){ input_len--; input_buf[input_len]='\0'; needs_redraw=1; }
+    } else if(key==57){ /* Space */
+        if(input_len<COLS-1){ input_buf[input_len++]=' '; input_buf[input_len]='\0'; needs_redraw=1; }
+    } else if(key>=30&&key<=58&&input_len<COLS-1){ /* a-z (evdev 30-58) */
+        char c='a'+(key-30);
+        input_buf[input_len++]=c;
+        input_buf[input_len]='\0';
+        needs_redraw=1;
+    } else if(key>=2&&key<=11&&input_len<COLS-1){ /* 1-9,0 (evdev 2-11) */
+        char c=(key==11)?'0':('1'+(key-2));
+        input_buf[input_len++]=c;
+        input_buf[input_len]='\0';
+        needs_redraw=1;
+    }
+}
+static const struct wl_keyboard_listener kbl={
+    .keymap=kb_keymap,.enter=kb_enter,.leave=kb_leave,
+    .key=kb_key,.modifiers=kb_mod,.repeat_info=kb_rep
+};
+static void seat_caps(void*d,struct wl_seat*s,uint32_t caps){
+    (void)d;
+    if((caps&WL_SEAT_CAPABILITY_KEYBOARD)&&!keyboard){
+        keyboard=wl_seat_get_keyboard(s);
+        wl_keyboard_add_listener(keyboard,&kbl,NULL);
+    }
+}
+static void seat_name(void*d,struct wl_seat*s,const char*n){(void)d;(void)s;(void)n;}
+static const struct wl_seat_listener seatl={.capabilities=seat_caps,.name=seat_name};
 
 static void render(void) {
     /* Background: dark teal */
@@ -312,6 +371,10 @@ int main(void) {
     struct wl_registry*reg=wl_display_get_registry(display);
     wl_registry_add_listener(reg,&rl,NULL); wl_display_roundtrip(display);
     if(!compositor||!shm||!xdg_wm_base){fprintf(stderr,"[kairos] FATAL: missing globals\n");return 1;}
+    if(seat){
+        wl_seat_add_listener(seat,&seatl,NULL);
+        wl_display_roundtrip(display);
+    }
     xdg_wm_base_add_listener(xdg_wm_base,&xwml,NULL);
     if(create_shm()<0){fprintf(stderr,"[kairos] FATAL: no buffer\n");return 1;}
     surface=wl_compositor_create_surface(compositor);
@@ -329,6 +392,25 @@ int main(void) {
     add_chat_line("(Model: Qwen2.5-1.5B via llama-server)");
     add_chat_line("");
 
+    /* Initialize the in-process AI engine (libwlt-ai.a).
+     * Local mode, amnesic memory, loopback endpoint for llama-server. */
+    wlt_ai_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.enabled = true;
+    cfg.mode = WLT_AI_MODE_LOCAL;
+    cfg.memory_mode = WLT_AI_MEMORY_AMNESIC;
+    strncpy(cfg.local_llm_endpoint, "http://127.0.0.1:8080",
+            sizeof(cfg.local_llm_endpoint) - 1);
+    strncpy(cfg.llm_model, "qwen2.5-1.5b", sizeof(cfg.llm_model) - 1);
+    ai_ctx = wlt_ai_init(&cfg);
+    if (ai_ctx == NULL) {
+        fprintf(stderr, "[kairos] WARNING: AI engine init failed "
+                "(queries will show error)\n");
+        add_chat_line("(AI engine init failed)");
+    } else {
+        fprintf(stderr, "[kairos] AI engine ready (local LLM)\n");
+    }
+
     while(running) {
         while(wl_display_prepare_read(display)!=0) wl_display_dispatch_pending(display);
         wl_display_flush(display); wl_display_read_events(display); wl_display_dispatch_pending(display);
@@ -341,6 +423,10 @@ int main(void) {
             wl_surface_commit(surface);
             needs_redraw=0;
         }
+    }
+    if (ai_ctx != NULL) {
+        wlt_ai_shutdown(ai_ctx);
+        ai_ctx = NULL;
     }
     fprintf(stderr,"[kairos] exiting\n");
     return 0;

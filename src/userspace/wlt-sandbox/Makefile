@@ -15,7 +15,7 @@
 #_GNU_SOURCE is required for unshare(), clone3(), and pipe2().
 
 CC       = gcc
-CFLAGS   = -Wall -Wextra -Werror -std=gnu11 -O2 -Iinclude -D_GNU_SOURCE
+CFLAGS   = -Wall -Wextra -Werror -std=gnu11 -O2 -Iinclude -I../wlt-permissions/include -D_GNU_SOURCE
 LDFLAGS  =
 
 SHARED_CFLAGS  = -fPIC

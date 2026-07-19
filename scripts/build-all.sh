@@ -58,10 +58,21 @@ if [ $? -ne 0 ]; then echo "STATUSBAR FAILED"; exit 1; fi
 cp /tmp/wlt-statusbar $ROOTFS/usr/bin/wlt-statusbar && chmod 755 $ROOTFS/usr/bin/wlt-statusbar
 echo "status bar OK"
 
-echo "=== STEP 7: compile kairos window ==="
-gcc -O2 -Wall -I /tmp $(pkg-config --cflags wayland-client) \
+echo "=== STEP 6.5: build libwlt-ai.a ==="
+cd $AI
+make clean 2>/dev/null || true
+make 2>&1
+if [ $? -ne 0 ]; then echo "WLT-AI LIB FAILED"; exit 1; fi
+cp libwlt-ai.a $ROOTFS/usr/lib/ 2>/dev/null || true
+mkdir -p $ROOTFS/usr/include/wlt-ai
+cp include/ai.h include/wlt_http.h $ROOTFS/usr/include/wlt-ai/ 2>/dev/null || true
+cd $REPO
+echo "libwlt-ai.a OK"
+
+echo "=== STEP 7: compile kairos window (links libwlt-ai.a) ==="
+gcc -O2 -Wall -I /tmp -I $AI/include $(pkg-config --cflags wayland-client) \
     $AI/kairos_window.c /tmp/xdg-shell-client-protocol.c \
-    $(pkg-config --libs wayland-client) -o /tmp/kairos-window 2>&1
+    -L $AI -lwlt-ai $(pkg-config --libs wayland-client) -o /tmp/kairos-window 2>&1
 if [ $? -ne 0 ]; then echo "KAIROS FAILED"; exit 1; fi
 cp /tmp/kairos-window $ROOTFS/usr/bin/kairos-window && chmod 755 $ROOTFS/usr/bin/kairos-window
 echo "kairos window OK"
@@ -83,6 +94,27 @@ if [ $? -ne 0 ]; then echo "WLTTOR FAILED (non-fatal)"; else
     cp wlttor $ROOTFS/usr/bin/wlttor && chmod 755 $ROOTFS/usr/bin/wlttor
     echo "wlttor OK"
 fi
+cd $REPO
+
+echo "=== STEP 9.5: build libwlt-permissions.a + libwlt-sandbox.a ==="
+PERMS=$REPO/src/userspace/wlt-permissions
+SANDBOX=$REPO/src/userspace/wlt-sandbox
+cd $PERMS
+make clean 2>/dev/null || true
+make 2>&1
+if [ $? -ne 0 ]; then echo "PERMISSIONS FAILED"; exit 1; fi
+cp libwlt-permissions.a $ROOTFS/usr/lib/ 2>/dev/null || true
+cp libwlt-permissions.so $ROOTFS/usr/lib/ 2>/dev/null || true
+mkdir -p $ROOTFS/usr/include/wlt-permissions
+cp include/permissions.h include/manifest.h $ROOTFS/usr/include/wlt-permissions/ 2>/dev/null || true
+echo "libwlt-permissions OK"
+cd $SANDBOX
+make clean 2>/dev/null || true
+make 2>&1
+if [ $? -ne 0 ]; then echo "SANDBOX FAILED"; exit 1; fi
+cp libwlt-sandbox.a $ROOTFS/usr/lib/ 2>/dev/null || true
+cp libwlt-sandbox.so $ROOTFS/usr/lib/ 2>/dev/null || true
+echo "libwlt-sandbox OK"
 cd $REPO
 
 echo "=== STEP 10: Install vendored Tor runtime libs ==="
