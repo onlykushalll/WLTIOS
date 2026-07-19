@@ -2,7 +2,7 @@
 
 > **Purpose:** This file captures EVERYTHING important from our conversation.
 > If my context fills up and resets, I read this to recover state.
-> **Last updated:** 2026-07-12
+> **Last updated:** 2026-07-19
 
 ---
 
@@ -184,7 +184,7 @@ This is a comprehensive read-only audit framework for web projects. It covers:
 | Real networking (Tor 100%) | QEMU serial: e1000 eth0 detected, wlt-net brings up 10.0.2.15/24 gw 10.0.2.2, Tor bootstraps to 100% (done). Commit: ab054d6 | 2026-07-19 |
 | Compositor window management | Multi-window desktop: terminal, file manager, launcher, statusbar, settings, kairos all render simultaneously. XDG shell + z-ordering + resize/minimize/maximize. Commits: 264ad7a, 9df6ae8, b664c44 | 2026-07-13 |
 | Kairos AI (in-process) | kairos_window.c calls wlt_ai_query (in-process, no fork+exec). libwlt-ai.a linked. wl_keyboard handling added. AI engine initializes: [kairos] AI engine ready (local LLM). Commit: b5570c5 | 2026-07-19 |
-| AI pipeline (code path) | kairos -> wlt_ai_query -> wlt_llm_call_local -> wlt_http_post -> 10.0.2.2:8080. Mock LLM server returns HTTP response. Connection succeeds (not -1). Commit: 60ba39b | 2026-07-19 |
+| AI pipeline (end-to-end proven) | kairos -> wlt_ai_query -> wlt_llm_call_local -> wlt_http_post -> 10.0.2.2:8080 -> mock server -> 200 response -> parsed + displayed. Mock server log shows guest's POST with correct JSON body. Commit: ad0e2c9 | 2026-07-19 |
 | Permissions enforcement (both branches) | DENY test: grant network=deny -> launch returns -5 (PERMISSION). ALLOW test: grant network=tor-only -> launch returns -7 (cgroup, not perm). Both branches proven. Commit: ab054d6 | 2026-07-19 |
 | Guardian FIM fixed | guardian.conf with absolute paths installed. Serial: [fim] initialized (db=/etc/wlt/guardian/fim.db, encrypted=1) [guardian] FIM engine: ready (encrypted=1). Commit: ab054d6 | 2026-07-19 |
 | wlt-pkg real install/remove | 9-step test, 0 failures: create package, install (extract+symlink+db), run binary, verify db, is_installed, remove (symlink+store+db cleanup), verify gone. Commit: 3f0f184 | 2026-07-19 |
@@ -215,10 +215,10 @@ compositor also needed setenv WLR_RENDERER pixman 1 because QEMU virtio-gpu
 does not support EGL/GL contexts - pixman (software rendering) works.
 
 ### What is NOT done
-- Tor PD (seL4 isolation of Tor in a second Linux guest VM) — ADR-03 decided on "Tor in second Linux VM" approach, spec + ADR being written. Key Vault PD proved the CAmkES multi-PD pattern works; Tor PD needs the same scaffold + IPC proof. This is the current top priority.
+- Tor PD (seL4 isolation) — Phase 1 scaffold DONE (commit ec23add): spec + ADR-09 written, CAmkES component builds (430/430 targets), [tor-pd] alive in serial. BUT IPC ping/pong NOT proven — blocked by 32-bit seL4 memory limit (503MB physical, not enough for vm0 + 2 PDs). Next step: port to 64-bit seL4 (x86_64) per Section 2 of current phase. See ADR-10 for the architecture fork documentation.
 - Firewall PD — all network traffic should pass through a seL4 partition (enforces Tor-only, kill switch). Not started.
 - Boot Verifier PD — runtime integrity check. Not started.
-- AI end-to-end with real LLM — code path proven via mock server, but no real llama-server model loaded in QEMU (QEMU user-mode networking quirk: guest gets 404 via 10.0.2.2 even though mock returns 200 when curled directly from WSL2 — needs debugging).
+- AI end-to-end with real LLM — code path PROVEN via mock server (commit ad0e2c9): guest POST reaches mock server, 200 returned, response parsed. Previous "404" was a mock server path matching issue (old server only handled /v1/chat/completions, not /), NOT a QEMU networking quirk. Still no real llama-server model loaded — mock proves the pipeline, real model is a configuration step.
 - Kairos Qwen2.5-1.5B upgrade to Qwythos-9B — still 1.5B stand-in.
 - Package repository, Tor Browser, A/B updates — wlt-pkg has real install/remove but no repo/tor browser.
 - Real hardware boot on the Dell Latitude — QEMU-only (user dropped hardware boot).
