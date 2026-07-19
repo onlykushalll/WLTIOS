@@ -1,0 +1,111 @@
+#!/bin/sh
+echo "================================================="
+echo "Key Vault + Tor PD Test Script Starting..."
+echo "================================================="
+
+MAX_TRIES=10
+TRIES=0
+while [ ! -c /dev/uio0 ] || [ ! -c /dev/uio1 ]; do
+    if [ $TRIES -ge $MAX_TRIES ]; then
+        echo "Timeout waiting for /dev/uio0/uio1"
+        exit 1
+    fi
+    echo "Waiting for uio devices... (Try $TRIES/$MAX_TRIES)"
+    sleep 1
+    TRIES=$((TRIES + 1))
+done
+
+echo "UIO devices found! Interrupt mapping in /proc/interrupts:"
+cat /proc/interrupts
+
+# === Key Vault Test (existing) ===
+echo ""
+echo "=== Key Vault Test ==="
+echo "Starting consumes_event_wait on uio1 in background..."
+consumes_event_wait /dev/uio1 &
+WAIT_PID=$!
+sleep 1
+
+echo -n "ping" | dataport_write /dev/uio0 4096
+echo "Emitting ready event on uio0..."
+emits_event_emit /dev/uio0
+sleep 2
+
+echo "After 2 seconds, /proc/interrupts:"
+cat /proc/interrupts
+
+echo "Checking if background wait finished..."
+if ps | grep -v grep | grep -q "$WAIT_PID"; then
+    echo "Wait process $WAIT_PID still running. Wait failed."
+    kill $WAIT_PID
+else
+    echo "Wait process finished! Reading result..."
+    A_read_result=$(dataport_read /dev/uio1 4096)
+    echo "Result from Key Vault: $A_read_result"
+    case "$A_read_result" in
+        *pong*)
+            echo "KV TEST PASSED"
+            ;;
+        *)
+            echo "KV TEST FAILED"
+            ;;
+    esac
+fi
+
+# === Tor PD Test (new) ===
+echo ""
+echo "=== Tor PD Test ==="
+# Wait for Tor PD UIO devices (uio2, uio3)
+TRIES=0
+while [ ! -c /dev/uio2 ] || [ ! -c /dev/uio3 ]; do
+    if [ $TRIES -ge $MAX_TRIES ]; then
+        echo "Timeout waiting for /dev/uio2/uio3"
+        echo "Tor PD UIO devices not available — skipping Tor test"
+        echo "Note: Tor PD connections may use different UIO numbering"
+        ls /dev/uio* 2>/dev/null
+        break
+    fi
+    echo "Waiting for Tor PD uio devices... (Try $TRIES/$MAX_TRIES)"
+    sleep 1
+    TRIES=$((TRIES + 1))
+done
+
+# If uio2/uio3 exist, run the Tor PD test
+if [ -c /dev/uio2 ] && [ -c /dev/uio3 ]; then
+    echo "Tor PD UIO devices found!"
+    echo "Starting consumes_event_wait on uio3 in background..."
+    consumes_event_wait /dev/uio3 &
+    TOR_WAIT_PID=$!
+    sleep 1
+
+    echo -n "ping" | dataport_write /dev/uio2 4096
+    echo "Emitting ready event on uio2..."
+    emits_event_emit /dev/uio2
+    sleep 2
+
+    echo "Checking if Tor PD wait finished..."
+    if ps | grep -v grep | grep -q "$TOR_WAIT_PID"; then
+        echo "Tor wait process $TOR_WAIT_PID still running. Wait failed."
+        kill $TOR_WAIT_PID
+    else
+        echo "Tor wait process finished! Reading result..."
+        TOR_read_result=$(dataport_read /dev/uio3 4096)
+        echo "Result from Tor PD: $TOR_read_result"
+        case "$TOR_read_result" in
+            *pong*)
+                echo "TOR PD TEST PASSED"
+                ;;
+            *)
+                echo "TOR PD TEST FAILED"
+                ;;
+        esac
+    fi
+fi
+
+echo ""
+echo "=== All available /dev/uio devices ==="
+ls /dev/uio* 2>/dev/null
+
+echo "================================================="
+echo "Test Script Finished!"
+echo "================================================="

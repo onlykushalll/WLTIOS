@@ -85,10 +85,10 @@ assembly {
         VM_CONFIGURATION_DEF()
         VM_PER_VM_CONFIG_DEF(0)
 
-        vm0.simple_untyped23_pool = 20;
-        vm0.simple_untyped25_pool = 2;
-        vm0.heap_size = 0x2000000;
-        vm0.guest_ram_mb = 128;
+        vm0.simple_untyped23_pool = 5;
+        vm0.simple_untyped25_pool = 0;
+        vm0.heap_size = 0x1000000;
+        vm0.guest_ram_mb = 32;
         vm0.kernel_cmdline = VM_GUEST_CMDLINE;
         vm0.kernel_image = "bzimage";
         vm0.kernel_relocs = "bzimage";
