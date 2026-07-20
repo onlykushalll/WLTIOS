@@ -1,0 +1,23 @@
+[audit+arch] Disk encryption audit + seL4 64-bit compat kernel building
+
+Disk Encryption Audit (Section 0):
+- docs/context/DISK_ENC_AUDIT.md: comprehensive audit with real wc -l + grep evidence
+- KEY FINDING: LUKS implementation DOES NOT EXIST — only API stubs in crypto.c
+  that return WLT_CRYPTO_ERR_UNSUPPORTED. luks.c and dm_crypt.c are referenced
+  but never written. The earlier audit's "code exists, never verified" claim
+  was incorrect.
+- file_crypto.c (496 lines): REAL implementation, streaming per-file encryption
+- secure_delete.c (291 lines): REAL implementation, 3-pass shredding
+- keyvault.c (96 lines): VERIFIED (seL4 ping/pong, 2026-07-12)
+- kill_switch.c: VERIFIED (earlier phase, route-based)
+- kexec code: DOES NOT EXIST
+- RAM wipe code: DOES NOT EXIST
+
+seL4 64-bit KeyVaultPD:
+- Kernel rebuilt with CONFIG_COMPAT=y + CONFIG_IA32_EMULATION=y + CONFIG_UIO=y
+- GCC 15 fix: -std=gnu17 added to KBUILD_CFLAGS
+- Full clean rebuild in progress (background, setsid)
+- Previous boot without CONFIG_COMPAT: "binfmt-464c" error (couldn't execute
+  32-bit binaries on 64-bit kernel)
+- With CONFIG_COMPAT: should allow 32-bit rootfs binaries to run on 64-bit kernel
+- Build not yet complete at time of commit
