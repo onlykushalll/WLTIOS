@@ -43,3 +43,4 @@ secrets/
 # seL4 build (cloned repo, not our code)
 sel4-build/
 src/userspace/wlt-tor-mgr/wlttor
+wholecontext.txt
