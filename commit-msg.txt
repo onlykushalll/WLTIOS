@@ -1,0 +1,1 @@
+kairos: wire anonymity_coach + privacy_analysis into kairos_window.c
