@@ -324,15 +324,30 @@ wlt_sandbox_launch(wlt_SandboxManager *m, const char *manifest_path,
 
         static wlt_PermsManager perms;
         static int perms_inited = 0;
-        if (!perms_inited) {
+        static int perms_init_failed = 0;
+        if (!perms_inited && !perms_init_failed) {
             const char *grants_dir = getenv("WLT_PERMS_GRANTS_DIR");
             if (!grants_dir) grants_dir = WLT_PERMS_GRANTS_DIR;
             if (wlt_perms_init(&perms, grants_dir) == WLT_PERMS_OK) {
                 perms_inited = 1;
             } else {
-                WLT_LAUNCH_LOG_WRN("permission manager init failed; "
-                                   "skipping network check");
+                /* SECURITY [ultrareview C1]: fail CLOSED, not open. If the
+                 * permission manager can't init (e.g. a read-only /var
+                 * during amnesic/live-USB boot, disk full) the old code
+                 * silently skipped the permission check entirely and let
+                 * every app launch unchecked — on an OS whose entire
+                 * security value proposition is permission enforcement,
+                 * an ordinary I/O failure silently disabling it is a
+                 * critical bug. Refuse to launch instead. */
+                perms_init_failed = 1;
+                WLT_LAUNCH_LOG_ERR("permission manager init failed for "
+                                   "grants_dir=%s; refusing to launch "
+                                   "(fail-closed, not fail-open)",
+                                   grants_dir);
             }
+        }
+        if (perms_init_failed) {
+            return WLT_SANDBOX_ERR_PERMISSION;
         }
         if (perms_inited) {
             /* Register the app first (loads manifest into manager),
