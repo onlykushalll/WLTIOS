@@ -15,6 +15,7 @@
  */
 
 #include "ai.h"
+#include "wlt_http.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -388,12 +389,9 @@ wlt_vision_analyze(const char *image_path, const char *question,
     char *b64_data = NULL;
     char *json_body = NULL;
     char *url = NULL;
-    struct curl_slist *headers = NULL;
-    wlt_vbuf_t resp_buf = {0};
+    char resp_buf[32768] = {0};
     struct stat st;
-    long http_code = 0;
-    CURL *curl = NULL;
-    CURLcode rc;
+    int http_code = 0;
     wlt_ai_err_t ret = WLT_AI_ERR_MODEL;
     char escaped_question[WLT_AI_MAX_MSG_LEN * 2];
 
@@ -485,50 +483,26 @@ wlt_vision_analyze(const char *image_path, const char *question,
                                        : "http://localhost:8081");
     }
 
-    /* Set up HTTP headers */
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    if (cfg->mode == WLT_AI_MODE_CLOUD &&
-        cfg->cloud_api_key[0] != '\0' &&
-        cfg->cloud_provider != WLT_AI_CLOUD_GEMINI) {
-        char auth[512];
-        snprintf(auth, sizeof(auth), "Authorization: Bearer %s",
-                 cfg->cloud_api_key);
-        headers = curl_slist_append(headers, auth);
-    }
+    /* Perform the HTTP request using wlt_http_post (no libcurl dependency).
+     * Same pattern as ai.c's local LLM path. */
+    http_code = wlt_http_post(url, json_body, "application/json",
+                             resp_buf, sizeof(resp_buf), 30);
 
-    /* Perform the HTTP request */
-    curl = curl_easy_init();
-    if (curl == NULL) {
+    if (http_code < 0) {
+        fprintf(stderr, "wlt-ai: VLM connection error\n");
         ret = WLT_AI_ERR_NETWORK;
         goto cleanup;
     }
 
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_body);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, wlt_vbuf_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp_buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-
-    rc = curl_easy_perform(curl);
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-    if (rc != CURLE_OK) {
-        fprintf(stderr, "wlt-ai: VLM request failed: %s\n",
-                curl_easy_strerror(rc));
-        ret = WLT_AI_ERR_NETWORK;
-        goto cleanup;
-    }
-
-    if (http_code != 200 || resp_buf.data == NULL) {
-        fprintf(stderr, "wlt-ai: VLM HTTP %ld\n", http_code);
+    if (http_code != 200 || resp_buf[0] == '\0') {
+        fprintf(stderr, "wlt-ai: VLM HTTP %d\n", http_code);
         ret = WLT_AI_ERR_MODEL;
         goto cleanup;
     }
 
     /* Extract the response text from JSON */
-    if (wlt_extract_json_text(resp_buf.data, result, result_len) == NULL) {
-        strncpy(result, resp_buf.data, result_len - 1);
+    if (wlt_extract_json_text(resp_buf, result, result_len) == NULL) {
+        strncpy(result, resp_buf, result_len - 1);
         result[result_len - 1] = '\0';
     }
 
@@ -545,11 +519,6 @@ cleanup:
         free(json_body);
     if (url)
         free(url);
-    if (curl)
-        curl_easy_cleanup(curl);
-    if (headers)
-        curl_slist_free_all(headers);
-    wlt_vbuf_free(&resp_buf);
     return ret;
 }
 

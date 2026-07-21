@@ -14,16 +14,7 @@
 #define WLT_PP_IDLE_THRESHOLD_SEC 300  /* 5 minutes */
 #define WLT_PP_SCAN_THRESHOLD_SEC 60   /* Scan within 60s = suspicious */
 
-typedef enum {
-    WLT_PP_EVENT_PORT_SCAN = 0,
-    WLT_PP_EVENT_BRUTE_FORCE,
-    WLT_PP_EVENT_SUSPICIOUS_PROCESS,
-    WLT_PP_EVENT_DISK_ENCRYPTION_OFF,
-    WLT_PP_EVENT_TOR_DISCONNECTED,
-    WLT_PP_EVENT_NEW_USB_DEVICE,
-    WLT_PP_EVENT_USER_IDLE,
-    WLT_PP_EVENT_SCREEN_LOCK_OFF,
-} wlt_pp_event_type_t;
+/* wlt_pp_event_type_t declared in ai.h */
 
 typedef struct {
     wlt_pp_event_type_t type;
