@@ -324,13 +324,18 @@ wlt_sandbox_launch(wlt_SandboxManager *m, const char *manifest_path,
 
         static wlt_PermsManager perms;
         static int perms_inited = 0;
+<<<<<<< HEAD
         static int perms_init_failed = 0;
         if (!perms_inited && !perms_init_failed) {
+=======
+        if (!perms_inited) {
+>>>>>>> d687790890b774744483bc2cf01a189f8eb72c3e
             const char *grants_dir = getenv("WLT_PERMS_GRANTS_DIR");
             if (!grants_dir) grants_dir = WLT_PERMS_GRANTS_DIR;
             if (wlt_perms_init(&perms, grants_dir) == WLT_PERMS_OK) {
                 perms_inited = 1;
             } else {
+<<<<<<< HEAD
                 /* SECURITY [ultrareview C1]: fail CLOSED, not open. If the
                  * permission manager can't init (e.g. a read-only /var
                  * during amnesic/live-USB boot, disk full) the old code
@@ -349,6 +354,12 @@ wlt_sandbox_launch(wlt_SandboxManager *m, const char *manifest_path,
         if (perms_init_failed) {
             return WLT_SANDBOX_ERR_PERMISSION;
         }
+=======
+                WLT_LAUNCH_LOG_WRN("permission manager init failed; "
+                                   "skipping network check");
+            }
+        }
+>>>>>>> d687790890b774744483bc2cf01a189f8eb72c3e
         if (perms_inited) {
             /* Register the app first (loads manifest into manager),
              * then load its grants from disk. wlt_perms_register is
