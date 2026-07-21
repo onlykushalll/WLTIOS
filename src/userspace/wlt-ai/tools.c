@@ -82,21 +82,70 @@ static const wlt_setting_entry_t wlt_setting_registry[] = {
     { NULL, NULL }
 };
 
-/* Commands that the AI is never allowed to run */
+/* Commands that the AI is never allowed to run.
+ *
+ * [ultrareview] This denylist is defense-in-depth, not a real security
+ * boundary — it is trivially bypassed (whitespace variance like
+ * "rm  -rf  /" with an extra space skips every substring match below;
+ * command substitution can reconstruct any blocked string at runtime;
+ * anything simply not on this list — arbitrary file exfiltration,
+ * reading key material, curl|sh, etc. — passes through untouched).
+ * A denylist over popen()/`/bin/sh -c` cannot be made safe by adding
+ * more entries; the fix is architectural (route through wlt-permissions
+ * like every other privileged action in this project, or drop shell
+ * semantics the way wlt_tool_change_setting now does via execv). This
+ * list is only here to stop the most catastrophic one-shot mistakes
+ * until that fix lands — do not treat it as sufficient on its own. */
 static const char *wlt_command_denylist[] = {
     "rm -rf /",
+    "rm -fr /",
     "mkfs",
     "dd if=",
+    "dd of=/dev/",
     "shutdown",
     "reboot",
+    "poweroff",
+    "halt",
     "init 0",
     "init 6",
     ":(){:|:&};:",
     "chmod 777 /",
+    "chmod -r 777",
     "killall -9",
     "kill -9 1",
+    "> /dev/sd",
+    "> /dev/nvme",
+    "of=/dev/sd",
+    "of=/dev/nvme",
+    "curl ",
+    "wget ",
+    "/etc/shadow",
+    "/etc/passwd",
+    "id_rsa",
+    "id_ed25519",
+    ".ssh/",
+    "mcpilot",
     NULL
 };
+
+/* Normalize runs of whitespace to single spaces before denylist
+ * matching, so "rm  -rf  /" (extra spaces) still matches "rm -rf /".
+ * Closes the simplest bypass — does NOT make the denylist a real
+ * security boundary, see the comment above. */
+static void
+wlt_normalize_whitespace(char *s)
+{
+    char *dst = s;
+    bool in_space = false;
+    for (const char *src = s; *src; src++) {
+        if (*src == ' ' || *src == '\t') {
+            if (!in_space) { *dst++ = ' '; in_space = true; }
+        } else {
+            *dst++ = *src; in_space = false;
+        }
+    }
+    *dst = '\0';
+}
 
 static void
 wlt_str_trim(char *s)
@@ -129,6 +178,7 @@ wlt_command_is_safe(const char *cmd)
     strncpy(lower, cmd, sizeof(lower) - 1);
     lower[sizeof(lower) - 1] = '\0';
     wlt_str_tolower(lower);
+    wlt_normalize_whitespace(lower); /* [ultrareview] see denylist comment */
 
     for (i = 0; wlt_command_denylist[i] != NULL; i++) {
         if (strstr(lower, wlt_command_denylist[i]) != NULL) {
@@ -285,12 +335,79 @@ wlt_tool_open_app(const char *app_name)
 /* Tool: Change Setting                                               */
 /* ------------------------------------------------------------------ */
 
+/* Execute control_path with a single argv[1]=arg, no shell involved.
+ * Replaces popen("%s %s", control_path, setting), which passed LLM-
+ * controlled `setting` text straight to /bin/sh -c with no escaping —
+ * e.g. setting="volume; rm -rf /home" would run a second, attacker/
+ * model-chosen command. execv never invokes a shell — no metacharacter
+ * to inject: the setting text is delivered as one argv entry, verbatim,
+ * however it's spelled. [ultrareview C2/C3] */
+static void
+wlt_exec_argv_capture(const char *path, const char *arg,
+                      wlt_ai_tool_result_t *result)
+{
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        result->success = false;
+        snprintf(result->output, sizeof(result->output),
+                 "[pipe failed: %s]", strerror(errno));
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]); close(pipefd[1]);
+        result->success = false;
+        snprintf(result->output, sizeof(result->output),
+                 "[fork failed: %s]", strerror(errno));
+        return;
+    }
+
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
+        char *argv[3];
+        argv[0] = (char *)path;
+        argv[1] = (char *)arg;
+        argv[2] = NULL;
+        execv(path, argv);
+        _exit(127);
+    }
+
+    close(pipefd[1]);
+    size_t offset = 0;
+    char buf[512];
+    ssize_t n;
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+        size_t len = (size_t)n;
+        if (offset + len >= sizeof(result->output) - 1) {
+            len = sizeof(result->output) - 1 - offset;
+            if (len == 0) break;
+        }
+        memcpy(result->output + offset, buf, len);
+        offset += len;
+    }
+    close(pipefd[0]);
+    result->output[offset] = '\0';
+
+    int status;
+    waitpid(pid, &status, 0);
+    result->success = (WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    if (offset == 0) {
+        snprintf(result->output, sizeof(result->output),
+                 "[Command completed (exit %d)]",
+                 WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+    }
+}
+
 wlt_ai_tool_result_t
 wlt_tool_change_setting(const char *setting)
 {
     wlt_ai_tool_result_t result;
     const char *control_path;
-    char cmd[WLT_AI_CMD_LEN];
 
     memset(&result, 0, sizeof(result));
 
@@ -309,7 +426,6 @@ wlt_tool_change_setting(const char *setting)
         return result;
     }
 
-    /* Check that the control script exists and is executable */
     if (access(control_path, X_OK) != 0) {
         result.success = false;
         snprintf(result.output, sizeof(result.output),
@@ -318,17 +434,19 @@ wlt_tool_change_setting(const char *setting)
         return result;
     }
 
-    snprintf(cmd, sizeof(cmd), "%s %s", control_path, setting);
-    wlt_exec_capture(cmd, &result);
+    wlt_exec_argv_capture(control_path, setting, &result);
 
     if (result.success) {
-        char msg[WLT_AI_MAX_TOOL_RESULT];
-        snprintf(msg, sizeof(msg), "[Setting changed: %s]", setting);
-        /* Prepend status to output */
-        memmove(result.output + strlen(msg) + 1, result.output,
-                sizeof(result.output) - strlen(msg) - 1);
-        memcpy(result.output, msg, strlen(msg));
-        result.output[strlen(msg)] = '\n';
+        /* Prepend status in a separate buffer — no in-place memmove
+         * whose length math relied on an unenforced size relationship
+         * between WLT_AI_MAX_TOOL_ARGS and WLT_AI_MAX_TOOL_RESULT. */
+        char combined[WLT_AI_MAX_TOOL_RESULT];
+        int n = snprintf(combined, sizeof(combined),
+                         "[Setting changed: %s]\n%s", setting, result.output);
+        if (n < 0) n = 0;
+        if ((size_t)n >= sizeof(combined)) n = sizeof(combined) - 1;
+        memcpy(result.output, combined, (size_t)n);
+        result.output[n] = '\0';
     }
 
     return result;
