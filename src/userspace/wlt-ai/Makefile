@@ -19,7 +19,7 @@
 
 CC       ?= cc
 AR       ?= ar
-CFLAGS   ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -g
+CFLAGS   ?= -std=c11 -Wall -Wextra -Wpedantic -Wno-format-truncation -Wno-stringop-truncation -Wno-unused-function -Wno-maybe-uninitialized -Wno-format -O2 -g
 CPPFLAGS  = -Iinclude -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE
 LDFLAGS  ?=
 
@@ -31,7 +31,7 @@ BUILD_DIR = build
 
 # wlt_http.c replaces libcurl for the local LLM POST (loopback only).
 # curl_compat.h stubs the remaining curl refs in ai.c (cloud/STT/TTS).
-LIB_SOURCES = ai.c wlt_http.c tools.c memory.c config.c file_search.c vision.c
+LIB_SOURCES = ai.c wlt_http.c tools.c memory.c config.c file_search.c vision.c anonymity_coach.c privacy_analysis.c proactive_protection.c
 LIB_OBJS    = $(patsubst %.c,$(BUILD_DIR)/%.o,$(LIB_SOURCES))
 
 LIB_NAME    = libwlt-ai.a

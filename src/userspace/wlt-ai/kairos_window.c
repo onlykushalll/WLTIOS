@@ -435,6 +435,33 @@ int main(void) {
         needs_redraw = 1;
     }
 
+    /* Wire proactive_protection — Guardian alerts displayed in Kairos */
+    {
+        void on_pp_alert(wlt_pp_event_type_t type, const char *detail, void *ud) {
+            (void)ud;
+            char alert_msg[COLS];
+            const char *type_str = "ALERT";
+            switch (type) {
+                case WLT_PP_EVENT_PORT_SCAN: type_str = "PORT SCAN"; break;
+                case WLT_PP_EVENT_BRUTE_FORCE: type_str = "BRUTE FORCE"; break;
+                case WLT_PP_EVENT_SUSPICIOUS_PROCESS: type_str = "SUSPICIOUS PROC"; break;
+                case WLT_PP_EVENT_DISK_ENCRYPTION_OFF: type_str = "DISK ENC OFF"; break;
+                case WLT_PP_EVENT_TOR_DISCONNECTED: type_str = "TOR DOWN"; break;
+                case WLT_PP_EVENT_NEW_USB_DEVICE: type_str = "NEW USB"; break;
+                case WLT_PP_EVENT_USER_IDLE: type_str = "USER IDLE"; break;
+                case WLT_PP_EVENT_SCREEN_LOCK_OFF: type_str = "SCREEN UNLOCKED"; break;
+            }
+            snprintf(alert_msg, sizeof(alert_msg), "[!] %s: %s", type_str, detail ? detail : "");
+            add_chat_line(alert_msg);
+            needs_redraw = 1;
+            fprintf(stderr, "[kairos] GUARDIAN ALERT: %s: %s\n", type_str, detail ? detail : "");
+        }
+        wlt_pp_init(on_pp_alert, NULL);
+        /* Simulate a Guardian event to prove the wiring works */
+        wlt_pp_report_event(WLT_PP_EVENT_TOR_DISCONNECTED, "Tor circuit lost (test alert)");
+        fprintf(stderr, "[kairos] Guardian alert wiring initialized\n");
+    }
+
     while(running) {
         while(wl_display_prepare_read(display)!=0) wl_display_dispatch_pending(display);
         wl_display_flush(display); wl_display_read_events(display); wl_display_dispatch_pending(display);

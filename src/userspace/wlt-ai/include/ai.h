@@ -276,6 +276,34 @@ const char *wlt_ai_strerror(wlt_ai_err_t err);
 /* Get a string for a tool type. */
 const char *wlt_tool_type_str(wlt_tool_type_t type);
 
+/* anonymity_coach.c */
+wlt_ai_err_t wlt_ai_anon_update_status(bool tor_ok, bool dns_tor, bool kill_switch, bool mac_rand, bool webrtc_ok, int circuits, const char *exit_country, const char *exit_ip);
+wlt_ai_err_t wlt_ai_anon_check(char *warnings, size_t warn_size);
+bool wlt_ai_anon_is_safe(void);
+
+/* privacy_analysis.c */
+wlt_ai_err_t wlt_ai_privacy_analyze(char *report, size_t report_size);
+wlt_ai_err_t wlt_ai_privacy_register_app(const char *name, bool network, bool direct_net, bool files, bool camera, bool mic, bool background);
+void wlt_ai_privacy_reset(void);
+
+/* proactive_protection.c */
+typedef enum {
+    WLT_PP_EVENT_PORT_SCAN = 0,
+    WLT_PP_EVENT_BRUTE_FORCE,
+    WLT_PP_EVENT_SUSPICIOUS_PROCESS,
+    WLT_PP_EVENT_DISK_ENCRYPTION_OFF,
+    WLT_PP_EVENT_TOR_DISCONNECTED,
+    WLT_PP_EVENT_NEW_USB_DEVICE,
+    WLT_PP_EVENT_USER_IDLE,
+    WLT_PP_EVENT_SCREEN_LOCK_OFF,
+} wlt_pp_event_type_t;
+wlt_ai_err_t wlt_pp_init(void (*on_alert)(wlt_pp_event_type_t, const char *, void *), void *user_data);
+wlt_ai_err_t wlt_pp_report_event(wlt_pp_event_type_t type, const char *detail);
+wlt_ai_err_t wlt_pp_user_activity(void);
+wlt_ai_err_t wlt_pp_check_idle(void);
+wlt_ai_err_t wlt_pp_get_report(char *report, size_t report_size);
+void wlt_pp_resolve_event(size_t index);
+
 #ifdef __cplusplus
 }
 #endif
