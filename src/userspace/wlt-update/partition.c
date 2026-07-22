@@ -23,6 +23,7 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/file.h>
 
 extern char **environ;
 
@@ -70,18 +71,26 @@ copy_file(const char *src, const char *dst)
     uint8_t buf[WLT_UPDATE_CHUNK_SIZE];
     ssize_t n;
     wlt_update_error_t err = WLT_UPDATE_OK;
-    while ((n = read(in, buf, sizeof(buf))) > 0)
-    {
+    for (;;) {
+        /* Retry read() on EINTR so a SIGCHLD tickle cannot fail a
+         * multi-hundred-MB kernel copy (C-H5). */
+        n = read(in, buf, sizeof(buf));
+        if (n < 0) { if (errno == EINTR) { continue; } err = WLT_UPDATE_ERR_IO; break; }
+        if (n == 0) { break; }
         ssize_t off = 0;
-        while (off < n)
-        {
+        while (off < n) {
             ssize_t w = write(out, buf + off, (size_t)(n - off));
             if (w < 0) { if (errno == EINTR) { continue; } err = WLT_UPDATE_ERR_IO; break; }
             off += w;
         }
         if (err != WLT_UPDATE_OK) { break; }
     }
-    if (n < 0) { err = WLT_UPDATE_ERR_IO; }
+    /* fsync the destination so the staged ESP kernel/sig are durable
+     * before the boot-config flip commits (C-H5, I-G3). */
+    if (err == WLT_UPDATE_OK && fsync(out) < 0) {
+        WLT_UPDATE_LOG_ERR("fsync %s: %s", dst, strerror(errno));
+        err = WLT_UPDATE_ERR_IO;
+    }
     close(in);
     close(out);
     return err;
@@ -199,8 +208,14 @@ wlt_boot_config_save(const char *path, const wlt_BootConfig *cfg)
     if (path == NULL || cfg == NULL) { return WLT_UPDATE_ERR_INVALID_ARG; }
     char tmp[WLT_UPDATE_MAX_PATH];
     if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) { return WLT_UPDATE_ERR_INVALID_ARG; }
-    FILE *fp = fopen(tmp, "w");
-    if (fp == NULL) { WLT_UPDATE_LOG_ERR("write %s: %s", tmp, strerror(errno)); return WLT_UPDATE_ERR_IO; }
+    /* O_EXCL|O_NOFOLLOW closes the symlink-swap race (F2/F3): a pre-created
+     * tmp symlinked to the active kernel can no longer truncate it. fsync
+     * file + fsync dir gives crash durability (G3). */
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0 && errno == EEXIST) { (void)unlink(tmp); fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600); }
+    if (fd < 0) { WLT_UPDATE_LOG_ERR("write %s: %s", tmp, strerror(errno)); return WLT_UPDATE_ERR_IO; }
+    FILE *fp = fdopen(fd, "w");
+    if (fp == NULL) { close(fd); (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
 
     fprintf(fp, "# WLT-Boot configuration â written by wlt-update\n[wlt-boot]\n");
     fprintf(fp, "version = %u\ntimeout = %u\n", cfg->version, cfg->timeout);
@@ -219,8 +234,19 @@ wlt_boot_config_save(const char *path, const wlt_BootConfig *cfg)
         fprintf(fp, "failed = %s\n", p->failed ? "yes" : "no");
         fprintf(fp, "version = %s\n", p->version[0] ? p->version : "unknown");
     }
-    if (fclose(fp) != 0) { return WLT_UPDATE_ERR_IO; }
-    if (rename(tmp, path) != 0) { WLT_UPDATE_LOG_ERR("rename %s: %s", path, strerror(errno)); return WLT_UPDATE_ERR_IO; }
+    if (fflush(fp) != 0) { (void)fclose(fp); (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
+    if (fsync(fileno(fp)) < 0) { (void)fclose(fp); (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
+    if (fclose(fp) != 0) { (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
+    if (rename(tmp, path) != 0) { WLT_UPDATE_LOG_ERR("rename %s: %s", path, strerror(errno)); (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
+    /* fsync the parent directory so the rename is durable across power loss. */
+    char dirbuf[WLT_UPDATE_MAX_PATH];
+    wlt_strlcpy(dirbuf, path, sizeof(dirbuf));
+    char *slash = strrchr(dirbuf, '/');
+    if (slash != NULL) {
+        *slash = '\0';
+        int dfd = open(dirbuf, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (dfd >= 0) { (void)fsync(dfd); close(dfd); }
+    }
     return WLT_UPDATE_OK;
 }
 
@@ -314,8 +340,11 @@ wlt_partition_unmount(wlt_PartitionId id)
     if (!is_mounted(p->mountpoint)) { return WLT_UPDATE_OK; }
     char *argv[] = { (char *)"umount", (char *)p->mountpoint, NULL };
     int code = 0;
-    (void)run_cmd(WLT_PARTITION_UMOUNT, argv, &code);
-    return WLT_UPDATE_OK;
+    wlt_update_error_t err = run_cmd(WLT_PARTITION_UMOUNT, argv, &code);
+    if (err != WLT_UPDATE_OK) {
+        WLT_UPDATE_LOG_ERR("umount %s failed (exit=%d)", p->mountpoint, code);
+    }
+    return err;
 }
 
 wlt_update_error_t
@@ -416,26 +445,38 @@ wlt_boot_config_increment_attempts(wlt_BootConfig *cfg, wlt_PartitionId id)
 wlt_update_error_t
 wlt_partition_rollback(void)
 {
+    /* Hold the global lock so a concurrent wlt_update_install cannot flip
+     * the boot default under us (C-H6). */
+    int lock_fd = open("/var/lock/wlt-update.lock", O_CREAT | O_CLOEXEC, 0600);
+    if (lock_fd < 0) { return WLT_UPDATE_ERR_IO; }
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
+        close(lock_fd);
+        WLT_UPDATE_LOG_ERR("rollback: another update in progress");
+        return WLT_UPDATE_ERR_BUSY;
+    }
+
     wlt_PartitionId active;
     wlt_update_error_t err = wlt_partition_get_active(&active);
-    if (err != WLT_UPDATE_OK) { return err; }
+    if (err != WLT_UPDATE_OK) { close(lock_fd); return err; }
     wlt_PartitionId target = (active == WLT_PARTITION_A) ? WLT_PARTITION_B : WLT_PARTITION_A;
 
     wlt_BootConfig cfg;
     err = wlt_boot_config_load(WLT_UPDATE_BOOT_CONFIG_PATH, &cfg);
-    if (err != WLT_UPDATE_OK) { return err; }
+    if (err != WLT_UPDATE_OK) { close(lock_fd); return err; }
 
     /* No-downgrade / no-bricking: refuse to boot a known-failed slot. */
     if (cfg.partitions[target].failed)
     {
         WLT_UPDATE_LOG_ERR("rollback target slot %c is marked failed",
                            target == WLT_PARTITION_B ? 'B' : 'A');
+        close(lock_fd);
         return WLT_UPDATE_ERR_PARTITION;
     }
     wlt_boot_config_set_default(&cfg, target);
     err = wlt_boot_config_save(WLT_UPDATE_BOOT_CONFIG_PATH, &cfg);
-    if (err != WLT_UPDATE_OK) { return err; }
+    if (err != WLT_UPDATE_OK) { close(lock_fd); return err; }
     WLT_UPDATE_LOG_INF("rollback staged: next boot from slot %c",
                        target == WLT_PARTITION_B ? 'B' : 'A');
+    close(lock_fd);
     return WLT_UPDATE_OK;
 }

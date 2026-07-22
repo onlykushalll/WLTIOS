@@ -20,6 +20,8 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 /* âââ Defaults âââââââââââââââââââââââââââââââââââââââââ
  * These mirror the spec's Tor + repository assumptions. The repo URL is
@@ -251,12 +253,17 @@ wlt_config_save(const char *path, const wlt_UpdateConfig *cfg)
         return WLT_UPDATE_ERR_INVALID_ARG;
     }
 
-    FILE *fp = fopen(tmp, "w");
-    if (fp == NULL)
+    /* O_EXCL|O_NOFOLLOW closes the symlink-swap race (F2); fsync file +
+     * fsync dir gives crash durability (G3). */
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0 && errno == EEXIST) { (void)unlink(tmp); fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600); }
+    if (fd < 0)
     {
         WLT_UPDATE_LOG_ERR("cannot write %s: %s", tmp, strerror(errno));
         return WLT_UPDATE_ERR_IO;
     }
+    FILE *fp = fdopen(fd, "w");
+    if (fp == NULL) { close(fd); (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
 
     fprintf(fp, "# WLT-Update configuration â managed by wltupdate\n");
     fprintf(fp, "[update]\n");
@@ -267,16 +274,41 @@ wlt_config_save(const char *path, const wlt_UpdateConfig *cfg)
     write_kv(fp, "pubkey_path", "%s", cfg->pubkey_path);
     write_kv(fp, "boot_config_path", "%s", cfg->boot_config_path);
 
-    if (fclose(fp) != 0)
+    if (fflush(fp) != 0)
     {
         WLT_UPDATE_LOG_ERR("flush failed on %s: %s", tmp, strerror(errno));
+        (void)fclose(fp); (void)unlink(tmp);
+        return WLT_UPDATE_ERR_IO;
+    }
+    if (fsync(fileno(fp)) < 0)
+    {
+        WLT_UPDATE_LOG_ERR("fsync failed on %s: %s", tmp, strerror(errno));
+        (void)fclose(fp); (void)unlink(tmp);
+        return WLT_UPDATE_ERR_IO;
+    }
+    if (fclose(fp) != 0)
+    {
+        WLT_UPDATE_LOG_ERR("close failed on %s: %s", tmp, strerror(errno));
+        (void)unlink(tmp);
         return WLT_UPDATE_ERR_IO;
     }
     if (rename(tmp, path) != 0)
     {
         WLT_UPDATE_LOG_ERR("rename %s -> %s failed: %s",
                            tmp, path, strerror(errno));
+        (void)unlink(tmp);
         return WLT_UPDATE_ERR_IO;
+    }
+
+    /* fsync the parent directory so the rename is durable across power loss. */
+    char dirbuf[WLT_UPDATE_MAX_PATH];
+    wlt_strlcpy(dirbuf, path, sizeof(dirbuf));
+    char *slash = strrchr(dirbuf, '/');
+    if (slash != NULL)
+    {
+        *slash = '\0';
+        int dfd = open(dirbuf, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (dfd >= 0) { (void)fsync(dfd); close(dfd); }
     }
 
     return WLT_UPDATE_OK;

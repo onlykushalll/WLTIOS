@@ -28,6 +28,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 
 static wlt_UpdateConfig g_config;
 static bool g_initialised = false;
@@ -287,13 +288,21 @@ tor_get(const char *url, uint16_t tor_port, int out_fd,
 static int
 version_cmp(const char *a, const char *b)
 {
-    int av[3] = { 0, 0, 0 };
-    int bv[3] = { 0, 0, 0 };
-    (void)sscanf(a, "%d.%d.%d", &av[0], &av[1], &av[2]);
-    (void)sscanf(b, "%d.%d.%d", &bv[0], &bv[1], &bv[2]);
+    /* Parse as unsigned with bounds — int sscanf would overflow on
+     * "2147483648.0.0" (F10) and lock the device out of future updates.
+     * Non-numeric versions parse as 0.0.0 (oldest, M2). Components >65535
+     * are clamped so a malformed manifest can never claim "newer". */
+    unsigned av[3] = { 0, 0, 0 };
+    unsigned bv[3] = { 0, 0, 0 };
+    int na = sscanf(a, "%u.%u.%u", &av[0], &av[1], &av[2]);
+    int nb = sscanf(b, "%u.%u.%u", &bv[0], &bv[1], &bv[2]);
+    if (na < 1) { av[0] = av[1] = av[2] = 0; }
+    if (nb < 1) { bv[0] = bv[1] = bv[2] = 0; }
     for (int i = 0; i < 3; i++)
     {
-        if (av[i] != bv[i]) { return av[i] - bv[i]; }
+        unsigned ac = (av[i] > 65535) ? 65535 : av[i];
+        unsigned bc = (bv[i] > 65535) ? 65535 : bv[i];
+        if (ac != bc) { return (ac < bc) ? -1 : 1; }
     }
     return 0;
 }
@@ -355,15 +364,34 @@ status_write(const wlt_UpdateStatus *st)
 {
     char tmp[WLT_UPDATE_MAX_PATH];
     snprintf(tmp, sizeof(tmp), "%s.tmp", WLT_UPDATE_STATUS_PATH);
-    FILE *fp = fopen(tmp, "w");
-    if (fp == NULL) { return WLT_UPDATE_ERR_IO; }
+    /* O_EXCL|O_NOFOLLOW closes the symlink-swap race (F2); fsync file +
+     * fsync dir gives crash durability (G3). */
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0 && errno == EEXIST) { (void)unlink(tmp); fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600); }
+    if (fd < 0) { return WLT_UPDATE_ERR_IO; }
+    FILE *fp = fdopen(fd, "w");
+    if (fp == NULL) { close(fd); (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
     fprintf(fp, "pending_reboot = %s\n", st->pending_reboot ? "yes" : "no");
     fprintf(fp, "update_available = %s\n", st->update_available ? "yes" : "no");
     fprintf(fp, "pending_version = %s\n", st->pending_version);
     fprintf(fp, "last_update_time = %s\n", st->last_update_time[0] ? st->last_update_time : "never");
     fprintf(fp, "auto_update = %s\n", st->auto_update ? "yes" : "no");
     fprintf(fp, "last_error = %s\n", st->last_error[0] ? st->last_error : "none");
-    if (fclose(fp) != 0 || rename(tmp, WLT_UPDATE_STATUS_PATH) != 0) { return WLT_UPDATE_ERR_IO; }
+    if (fflush(fp) != 0) { (void)fclose(fp); (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
+    if (fsync(fileno(fp)) < 0) { (void)fclose(fp); (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
+    if (fclose(fp) != 0) { (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
+    if (rename(tmp, WLT_UPDATE_STATUS_PATH) != 0) { (void)unlink(tmp); return WLT_UPDATE_ERR_IO; }
+    /* fsync the parent directory so the rename is durable across power loss. */
+    {
+        char dirbuf[WLT_UPDATE_MAX_PATH];
+        wlt_strlcpy(dirbuf, WLT_UPDATE_STATUS_PATH, sizeof(dirbuf));
+        char *slash = strrchr(dirbuf, '/');
+        if (slash != NULL) {
+            *slash = '\0';
+            int dfd = open(dirbuf, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+            if (dfd >= 0) { (void)fsync(dfd); close(dfd); }
+        }
+    }
     return WLT_UPDATE_OK;
 }
 
@@ -508,54 +536,95 @@ wlt_update_download(const char *dest_path, const wlt_UpdateVersion *ver)
 }
 
 /* ââ Public: install (verify â format â mount â extract â flip boot) ââ */
+/* Acquire the global wltupdate lock so concurrent runs cannot race on
+ * boot config / status / package install (C-H6). Returns an open fd to
+ * close on exit, or -1 on failure. */
+static int
+acquire_lock(void)
+{
+    int fd = open("/var/lock/wlt-update.lock", O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) { return -1; }
+    if (flock(fd, LOCK_EX | LOCK_NB) < 0) { close(fd); return -1; }
+    return fd;
+}
+
 wlt_update_error_t
 wlt_update_install(const char *package_path)
 {
     if (package_path == NULL) { return WLT_UPDATE_ERR_INVALID_ARG; }
     if (!g_initialised) { wlt_update_init(NULL); }
 
+    int lock_fd = acquire_lock();
+    if (lock_fd < 0) { set_last_error("install: another update in progress"); return WLT_UPDATE_ERR_BUSY; }
+
     wlt_UpdateStatus st;
     (void)status_read(&st);
-    if (st.pending_reboot) { return WLT_UPDATE_ERR_PENDING_REBOOT; }
+    if (st.pending_reboot) { close(lock_fd); return WLT_UPDATE_ERR_PENDING_REBOOT; }
 
     wlt_PartitionId inactive;
     wlt_update_error_t err = wlt_partition_get_inactive(&inactive);
-    if (err != WLT_UPDATE_OK) { return err; }
+    if (err != WLT_UPDATE_OK) { close(lock_fd); return err; }
 
-    /* Verify signature BEFORE touching any partition. */
-    char sig_path[WLT_UPDATE_MAX_PATH];
-    snprintf(sig_path, sizeof(sig_path), "%s.sig", package_path);
-    err = wlt_update_verify_file(package_path, sig_path, g_config.pubkey_path);
-    if (err != WLT_UPDATE_OK) { set_last_error("install: signature FAILED"); return err; }
-
-    err = wlt_partition_format(inactive);
-    if (err != WLT_UPDATE_OK) { set_last_error("install: format failed"); return err; }
-    err = wlt_partition_mount(inactive);
-    if (err != WLT_UPDATE_OK) { set_last_error("install: mount failed"); return err; }
-
-    struct stat pst;
-    if (stat(package_path, &pst) != 0)
-    {
-        (void)wlt_partition_unmount(inactive);
+    /* Open the package ONCE - both verify and tar read through /dev/fd/N
+     * so an attacker cannot rename()/replace the file in the gap between
+     * verify's fclose and tar's open (TOCTOU, F1). O_NOFOLLOW refuses a
+     * symlink-swap of the package itself. The fd is NOT CLOEXEC so tar
+     * inherits it; we close it explicitly at the end. */
+    int pkg_fd = open(package_path, O_RDONLY | O_NOFOLLOW);
+    if (pkg_fd < 0) {
+        set_last_error("install: cannot open package");
+        close(lock_fd);
         return WLT_UPDATE_ERR_NOT_FOUND;
     }
-    uint64_t free_bytes = 0;
-    err = wlt_partition_get_free_space(inactive, &free_bytes);
-    if (err != WLT_UPDATE_OK) { (void)wlt_partition_unmount(inactive); return err; }
-    if (free_bytes < (uint64_t)pst.st_size + (uint64_t)pst.st_size / 10)
+    char pkg_fd_path[32];
+    snprintf(pkg_fd_path, sizeof(pkg_fd_path), "/dev/fd/%d", pkg_fd);
+
+    /* Free-space check BEFORE format (C-H1, C-H2). Heuristic: a .tar.zst
+     * payload typically expands ~4x; refuse if the inactive device is
+     * smaller than that. lseek(SEEK_END) on a block device returns its
+     * size in bytes. */
+    struct stat pst;
+    if (fstat(pkg_fd, &pst) != 0) {
+        set_last_error("install: cannot stat package");
+        close(pkg_fd); close(lock_fd);
+        return WLT_UPDATE_ERR_NOT_FOUND;
+    }
+    uint64_t needed = (uint64_t)pst.st_size * 4;
+    wlt_PartitionInfo pinfo;
+    err = wlt_partition_get_info(inactive, &pinfo);
+    if (err != WLT_UPDATE_OK) { close(pkg_fd); close(lock_fd); return err; }
     {
-        (void)wlt_partition_unmount(inactive);
-        set_last_error("install: inactive partition too small");
-        return WLT_UPDATE_ERR_DISK_FULL;
+        int dev_fd = open(pinfo.device, O_RDONLY | O_CLOEXEC);
+        if (dev_fd >= 0) {
+            off_t dev_size = lseek(dev_fd, 0, SEEK_END);
+            close(dev_fd);
+            if (dev_size > 0 && (uint64_t)dev_size < needed) {
+                set_last_error("install: inactive partition too small for package");
+                close(pkg_fd); close(lock_fd);
+                return WLT_UPDATE_ERR_INSUFFICIENT_SPACE;
+            }
+        }
     }
 
-    err = wlt_partition_install_to(package_path, inactive);
+    /* Verify signature via the open fd path (TOCTOU: never re-open by name). */
+    char sig_path[WLT_UPDATE_MAX_PATH];
+    snprintf(sig_path, sizeof(sig_path), "%s.sig", package_path);
+    err = wlt_update_verify_file(pkg_fd_path, sig_path, g_config.pubkey_path);
+    if (err != WLT_UPDATE_OK) { set_last_error("install: signature FAILED"); close(pkg_fd); close(lock_fd); return err; }
+
+    err = wlt_partition_format(inactive);
+    if (err != WLT_UPDATE_OK) { set_last_error("install: format failed"); close(pkg_fd); close(lock_fd); return err; }
+    err = wlt_partition_mount(inactive);
+    if (err != WLT_UPDATE_OK) { set_last_error("install: mount failed"); (void)wlt_partition_unmount(inactive); close(pkg_fd); close(lock_fd); return err; }
+
+    err = wlt_partition_install_to(pkg_fd_path, inactive);
     (void)wlt_partition_unmount(inactive);
-    if (err != WLT_UPDATE_OK) { set_last_error("install: extraction failed"); return err; }
+    close(pkg_fd);
+    if (err != WLT_UPDATE_OK) { set_last_error("install: extraction failed"); close(lock_fd); return err; }
 
     wlt_BootConfig cfg;
     err = wlt_boot_config_load(g_config.boot_config_path, &cfg);
-    if (err != WLT_UPDATE_OK) { return err; }
+    if (err != WLT_UPDATE_OK) { close(lock_fd); return err; }
     wlt_PartitionInfo *slot = &cfg.partitions[inactive];
     slot->failed = false;
     slot->boot_attempts = 0;
@@ -567,7 +636,7 @@ wlt_update_install(const char *package_path)
     cfg.rollback_on_fail = true;
     wlt_boot_config_set_default(&cfg, inactive);
     err = wlt_boot_config_save(g_config.boot_config_path, &cfg);
-    if (err != WLT_UPDATE_OK) { set_last_error("install: boot config write failed"); return err; }
+    if (err != WLT_UPDATE_OK) { set_last_error("install: boot config write failed"); close(lock_fd); return err; }
 
     st.pending_reboot = true;
     st.last_error[0] = '\0';
@@ -582,6 +651,7 @@ wlt_update_install(const char *package_path)
     he.success = true;
     (void)history_append(&he);
 
+    close(lock_fd);
     WLT_UPDATE_LOG_INF("install staged on slot %c â reboot to activate", he.partition);
     return WLT_UPDATE_OK;
 }
@@ -706,6 +776,8 @@ wlt_update_error_str(wlt_update_error_t err)
         case WLT_UPDATE_ERR_TIMEOUT:            return "timed out";
         case WLT_UPDATE_ERR_ALREADY_UP_TO_DATE: return "already up to date";
         case WLT_UPDATE_ERR_PENDING_REBOOT:     return "pending reboot";
+        case WLT_UPDATE_ERR_INSUFFICIENT_SPACE: return "insufficient space";
+        case WLT_UPDATE_ERR_BUSY:               return "another update in progress";
         default:                                return "unknown error";
     }
 }

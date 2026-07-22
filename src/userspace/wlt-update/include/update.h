@@ -43,6 +43,8 @@ typedef enum {
     WLT_UPDATE_ERR_TIMEOUT = -14,
     WLT_UPDATE_ERR_ALREADY_UP_TO_DATE = -15,
     WLT_UPDATE_ERR_PENDING_REBOOT = -16,
+    WLT_UPDATE_ERR_INSUFFICIENT_SPACE = -17,  /* pre-format free-space check */
+    WLT_UPDATE_ERR_BUSY = -18,                /* another wltupdate holds the lock */
 } wlt_update_error_t;
 
 /* ââ Constants ââ */
