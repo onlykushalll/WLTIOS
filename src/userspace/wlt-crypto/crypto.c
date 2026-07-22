@@ -27,9 +27,9 @@ wlt_crypto_error_t wlt_secure_delete_impl(const char *path, int passes);
 /* LUKS2 implementation (luks.c). Forward-declared here so the dispatchers
  * below can forward to the real cryptsetup-backed impl. Signatures match
  * the definitions in luks.c. */
-wlt_crypto_error_t wlt_crypto_luks_format_impl(const char *device, const char *key_id);
+wlt_crypto_error_t wlt_crypto_luks_format_impl(const char *device, int key_fd);
 wlt_crypto_error_t wlt_crypto_luks_open_impl(const char *device, const char *name,
-                                             const char *key_id);
+                                             int key_fd);
 wlt_crypto_error_t wlt_crypto_luks_close_impl(const char *name);
 wlt_crypto_error_t wlt_crypto_luks_status_impl(const char *name, bool *is_open);
 
@@ -77,6 +77,15 @@ valid_device(const char *device)
     size_t len = strlen(device);
     if (len == 0 || len >= WLT_CRYPTO_MAX_DEVICE_PATH)
         return false;
+    /* FIX D-5: scope to /dev/ to prevent cryptsetup luksFormat
+     * from overwriting arbitrary files (e.g. /etc/passwd,
+     * /boot/vmlinuz) passed as the "device" argument. */
+    if (strncmp(device, "/dev/", 5) != 0)
+        return false;
+    /* FIX D-5: reject ".." anywhere in the path to prevent
+     * traversal like "/dev/../etc/passwd". */
+    if (strstr(device, "..") != NULL)
+        return false;
     return true;
 }
 
@@ -86,8 +95,21 @@ valid_luks_name(const char *name)
     if (name == NULL)
         return false;
     size_t len = strlen(name);
+    /* FIX D-7: restrict to [A-Za-z0-9._-]{1,31}. The previous
+     * code only checked length, allowing slashes, "..", and
+     * other shell-meta that could escape /dev/mapper/ or break
+     * cryptsetup arg parsing. */
     if (len == 0 || len >= WLT_CRYPTO_MAX_LUKS_NAME)
         return false;
+    for (size_t i = 0; i < len; i++)
+    {
+        char c = name[i];
+        if (!((c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-'))
+            return false;
+    }
     return true;
 }
 
@@ -238,7 +260,21 @@ wlt_crypto_luks_format(const char *device, const char *key_id)
         return WLT_CRYPTO_ERR_KEYVAULT;
     if (!valid_device(device) || !valid_key_id(key_id))
         return WLT_CRYPTO_ERR_INVALID_ARG;
-    return wlt_crypto_luks_format_impl(device, key_id);
+    /* FIX D-1: FAIL CLOSED. The public API keeps the historical
+     * (device, key_id) signature, but the underlying _impl now
+     * requires a key_fd sourced from the Key Vault PD. Until that
+     * integration lands (research-H), we pass key_fd=-1 and the
+     * _impl refuses with INVALID_ARG. The hardcoded passphrase
+     * path has been removed; we never silently format with a
+     * known key. */
+    (void)key_id;
+    wlt_crypto_error_t err = wlt_crypto_luks_format_impl(device, /*key_fd=*/-1);
+    if (err == WLT_CRYPTO_ERR_INVALID_ARG)
+    {
+        WLT_CRYPTO_LOG_ERR("luks_format: no key source configured "
+                           "(KeyVaultPD integration pending)");
+    }
+    return err;
 }
 
 wlt_crypto_error_t
@@ -250,7 +286,16 @@ wlt_crypto_luks_open(const char *device, const char *name,
     if (!valid_device(device) || !valid_luks_name(name) ||
         !valid_key_id(key_id))
         return WLT_CRYPTO_ERR_INVALID_ARG;
-    return wlt_crypto_luks_open_impl(device, name, key_id);
+    /* FIX D-1: FAIL CLOSED — see wlt_crypto_luks_format above. */
+    (void)key_id;
+    wlt_crypto_error_t err = wlt_crypto_luks_open_impl(device, name,
+                                                       /*key_fd=*/-1);
+    if (err == WLT_CRYPTO_ERR_INVALID_ARG)
+    {
+        WLT_CRYPTO_LOG_ERR("luks_open: no key source configured "
+                           "(KeyVaultPD integration pending)");
+    }
+    return err;
 }
 
 wlt_crypto_error_t

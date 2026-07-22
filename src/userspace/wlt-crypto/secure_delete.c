@@ -69,7 +69,7 @@ fill_random(uint8_t *buf, size_t len)
     return WLT_CRYPTO_OK;
 #else
     /* Fallback: /dev/urandom. */
-    int fd = open("/dev/urandom", O_RDONLY);
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (fd < 0)
         return WLT_CRYPTO_ERR_IO;
     size_t off = 0;
@@ -181,7 +181,7 @@ fsync_parent_dir(const char *path)
         dir[1] = '\0';
     else
         *slash = '\0';
-    int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (dfd < 0)
         return;
     fsync(dfd);
@@ -228,11 +228,23 @@ wlt_secure_delete_impl(const char *path, int passes)
         return WLT_CRYPTO_ERR_INVALID_ARG;
     }
 
-    int fd = open(path, O_WRONLY | O_SYNC);
+    /* FIX D-9: O_NOFOLLOW refuses symlinks. The lstat() above rejects
+     * symlinks at entry, but an attacker can swap the file for a symlink
+     * between lstat and open. O_NOFOLLOW closes that TOCTOU window: the
+     * open fails with ELOOP if `path` (or any component except the last)
+     * is a symlink. O_CLOEXEC (FIX A-L4) prevents the fd from leaking
+     * into any fork+exec'd children. */
+    int fd = open(path, O_WRONLY | O_SYNC | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0)
     {
         if (errno == EACCES)
             return WLT_CRYPTO_ERR_PERMISSION;
+        if (errno == ELOOP)
+        {
+            WLT_CRYPTO_LOG_ERR("shred: %s is a symlink (O_NOFOLLOW)",
+                               path);
+            return WLT_CRYPTO_ERR_INVALID_ARG;
+        }
         WLT_CRYPTO_LOG_ERR("shred: open(%s) failed: %s",
                            path, strerror(errno));
         return WLT_CRYPTO_ERR_IO;

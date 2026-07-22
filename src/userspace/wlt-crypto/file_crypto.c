@@ -124,7 +124,7 @@ fsync_parent_dir(const char *path)
         dir[1] = '\0';
     else
         *slash = '\0';
-    int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (dfd < 0)
         return;
     fsync(dfd);
@@ -145,7 +145,7 @@ release_files(int in_fd, int out_fd, const char *tmp, bool unlink_tmp)
 static wlt_crypto_error_t
 open_input_file(const char *path, int *fd_out, uint64_t *len_out)
 {
-    int fd = open(path, O_RDONLY);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0)
     {
         WLT_CRYPTO_LOG_ERR("file_crypto: open(%s) failed: %s",
@@ -175,7 +175,7 @@ open_output_tmp(const char *path, const char *suffix,
         return WLT_CRYPTO_ERR_TOO_LARGE;
     memcpy(tmp, path, plen);
     memcpy(tmp + plen, suffix, slen + 1);
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd < 0)
     {
         WLT_CRYPTO_LOG_ERR("file_crypto: open(%s) failed: %s",
@@ -186,13 +186,28 @@ open_output_tmp(const char *path, const char *suffix,
     return WLT_CRYPTO_OK;
 }
 
-/* fsync + close both fds, atomically rename tmp over path, fsync parent. */
+/* fsync + close both fds, atomically rename tmp over path, fsync parent.
+ *
+ * FIX A-C1: a fsync() failure on the ciphertext temp is now a HARD
+ * error. The previous code logged it at DBG level and proceeded to
+ * rename(tmp, path), destroying the original plaintext even though the
+ * ciphertext may not have been durable (NFS EIO, full tmpfs, disk
+ * failure). A power loss after such a rename left the path pointing at
+ * an empty or partial inode — both plaintext AND ciphertext gone.
+ * We now close fds, unlink the temp, and return IO BEFORE touching the
+ * original. */
 static wlt_crypto_error_t
 finalize_replace(int in_fd, int out_fd, const char *tmp, const char *path)
 {
     if (fsync(out_fd) < 0)
-        WLT_CRYPTO_LOG_DBG("file_crypto: fsync(out) failed: %s",
+    {
+        WLT_CRYPTO_LOG_ERR("file_crypto: fsync(out) failed: %s",
                            strerror(errno));
+        close(out_fd);
+        close(in_fd);
+        unlink(tmp);
+        return WLT_CRYPTO_ERR_IO;
+    }
     close(out_fd);
     close(in_fd);
     if (rename(tmp, path) < 0)
@@ -238,6 +253,16 @@ stream_encrypt(int in_fd, int out_fd, const char *key_id,
                                    cipher, &clen);
         if (err != WLT_CRYPTO_OK)
         {
+            zero_buf(plain, (size_t)r);
+            break;
+        }
+        /* FIX A-M1: post-call length validation. A buggy or hostile
+         * keyvault that returns clen > chunk + OVERHEAD would cause
+         * write_exact() below to over-read the cipher heap buffer. */
+        if (clen > chunk + WLT_CRYPTO_CIPHERTEXT_OVERHEAD)
+        {
+            WLT_CRYPTO_LOG_ERR("file_crypto: encrypt overran buffer");
+            err = WLT_CRYPTO_ERR_FORMAT;
             zero_buf(plain, (size_t)r);
             break;
         }
@@ -373,6 +398,17 @@ stream_decrypt(int in_fd, int out_fd, const char *key_id,
         {
             WLT_CRYPTO_LOG_ERR("file_crypto: decrypt failed "
                                "(possible attack)");
+            break;
+        }
+        /* FIX A-H2a / A-M1: post-call length validation. A tampered
+         * WLT1 header could supply a small chunk_size while the
+         * keyvault writes plain_len = (original chunk_size - overhead),
+         * overrunning the plain heap buffer. Cap at the buffer size. */
+        if (plain_len > chunk_size)
+        {
+            WLT_CRYPTO_LOG_ERR("file_crypto: decrypt overran buffer");
+            err = WLT_CRYPTO_ERR_FORMAT;
+            zero_buf(plain, chunk_size);
             break;
         }
 
