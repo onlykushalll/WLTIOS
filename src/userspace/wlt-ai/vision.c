@@ -27,8 +27,6 @@
 #include <linux/fb.h>
 #include <errno.h>
 
-#include <curl/curl.h>
-
 /* ------------------------------------------------------------------ */
 /* Constants                                                          */
 /* ------------------------------------------------------------------ */
@@ -329,6 +327,8 @@ wlt_json_escape_str(const char *in, char *out, size_t out_len)
         case '\t': out[i++] = '\\'; out[i++] = 't'; break;
         default:
             if ((unsigned char)*in < 0x20) {
+                /* \uXXXX is 6 chars + NUL. Stop if no room (audit B-H4). */
+                if (i + 6 >= out_len) break;
                 i += (size_t)snprintf(out + i, out_len - i,
                                       "\\u%04x", (unsigned)*in);
             } else {

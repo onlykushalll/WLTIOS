@@ -140,7 +140,7 @@ static const uint8_t font8x16[96][16] = {
 #define COLS 50
 #define ROWS 16
 #define WIN_W (COLS * CELL_W + 8)
-#define WIN_H (ROWS * CELL_H + 8 + CELL_H) /* extra row for input */
+#define WIN_H (ROWS * CELL_H + 8 + CELL_H + CELL_H) /* extra row for input + 1 row so input line is fully visible (audit B-M4) */
 
 /* Chat buffer */
 static char chat_lines[ROWS][COLS];

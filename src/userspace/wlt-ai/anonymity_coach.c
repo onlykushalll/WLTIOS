@@ -7,6 +7,12 @@
 #include "ai.h"
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 typedef struct {
     bool tor_connected;
@@ -113,11 +119,83 @@ wlt_ai_anon_check(char *warnings, size_t warn_size)
     return WLT_AI_OK;
 }
 
+/* Real Tor probe: connect to the Tor control port (127.0.0.1:9051) and
+ * issue GETINFO status/circuit-established. Returns true ONLY if Tor
+ * confirms a live circuit. Fails closed (returns false) if the control
+ * port is unreachable, refuses the connection, returns an error, or the
+ * circuit is not established. This replaces the previous trust-the-caller
+ * `tor_connected` boolean (audit E-C3 / B-M4) which kairos_window.c was
+ * hardcoding to true. */
+static bool
+wlt_ai_probe_tor_circuit(void)
+{
+    static const char probe[] =
+        "GETINFO status/circuit-established\r\nquit\r\n";
+    char buf[512];
+    int sock, ret;
+    bool ok = false;
+    struct sockaddr_in addr;
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return false;
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(9051); /* Tor control port */
+    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
+        close(sock); return false;
+    }
+
+    /* 2s timeouts — the control port is loopback; if Tor is up it must
+     * answer fast. If anything stalls or refuses, treat as Tor DOWN. */
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(sock); return false; /* Tor control port not running */
+    }
+
+    if (send(sock, probe, sizeof(probe) - 1, 0) <= 0) {
+        close(sock); return false;
+    }
+
+    /* Read Tor's reply (small). Loop in case it splits across packets,
+     * and short-circuit once we have the circuit-established line. */
+    size_t total = 0;
+    buf[0] = '\0';
+    while (total < sizeof(buf) - 1) {
+        ret = recv(sock, buf + total, sizeof(buf) - 1 - total, 0);
+        if (ret <= 0) break;
+        total += (size_t)ret;
+        buf[total] = '\0';
+        if (strstr(buf, "250-status/circuit-established=") != NULL)
+            break;
+    }
+    buf[total] = '\0';
+    close(sock);
+
+    /* 250-status/circuit-established=1 means a Tor circuit is live.
+     * Anything else (including no response, error responses, or =0)
+     * means Tor is DOWN or not yet bootstrapped. */
+    if (strstr(buf, "250-status/circuit-established=1") != NULL)
+        ok = true;
+
+    return ok;
+}
+
 bool
 wlt_ai_anon_is_safe(void)
 {
-    return g_anon.tor_connected &&
-           g_anon.dns_via_tor &&
+    /* Fail closed: if we cannot independently verify a live Tor circuit
+     * via the control port, NEVER report "safe" — the UI must not show
+     * "PROTECTED" when Tor is dead or uncheckable. The caller-supplied
+     * booleans below remain necessary conditions but are no longer
+     * sufficient on their own (audit E-C3 / B-M4). */
+    if (!wlt_ai_probe_tor_circuit())
+        return false;
+
+    return g_anon.dns_via_tor &&
            g_anon.kill_switch_active &&
            g_anon.mac_randomized &&
            !g_anon.webrtc_leak;

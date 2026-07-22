@@ -793,6 +793,10 @@ wlt_json_escape(char *out, size_t out_len, const char *in)
         case '\t': out[i++] = '\\'; out[i++] = 't'; break;
         default:
             if ((unsigned char)*in < 0x20) {
+                /* \uXXXX is 6 chars + NUL. If we don't have room, stop
+                 * instead of letting snprintf's would-be-written return
+                 * value push `i` past out_len (CWE-787 stack write). */
+                if (i + 6 >= out_len) break;
                 i += (size_t)snprintf(out + i, out_len - i,
                                       "\\u%04x", (unsigned)*in);
             } else {
@@ -873,8 +877,17 @@ wlt_build_chat_json(const wlt_ai_history_t *history,
         "{\"model\":\"%s\",\"messages\":[",
         "default");
 
+    /* Iterate oldest->newest. Before the ring wraps (count < MAX)
+     * messages live linearly at indices 0..count-1; after it wraps
+     * (count == MAX) the oldest message is at `head` and the newest
+     * is at `head-1`. The conditional start handles both cases — the
+     * original linear walk read slots in shuffled order once the
+     * 100-message cap was reached (audit B-H2). */
+    size_t start = (history->count >= WLT_AI_MAX_HISTORY) ? history->head : 0;
+    size_t idx;
     for (i = 0; i < history->count && offset < json_len - 256; i++) {
-        const wlt_ai_message_t *msg = &history->messages[i];
+        idx = (start + i) % WLT_AI_MAX_HISTORY;
+        const wlt_ai_message_t *msg = &history->messages[idx];
 
         if (i > 0 && offset < json_len - 1)
             json[offset++] = ',';
