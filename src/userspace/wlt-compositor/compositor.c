@@ -623,7 +623,15 @@ wlt_comp_init(wlt_comp_state_t *state)
         return WLT_COMP_ERR_INVALID_ARG;
 
     memset(state, 0, sizeof(*state));
-    setenv("WLR_RENDERER", "pixman", 1);
+    /* GPU rendering path: prefer GLES2 when a DRM device is available
+     * (real GPU or llvmpipe-backed Mesa — both are real GLES2 pipelines),
+     * fall back to pixman for headless. The GLES2 renderer, Mesa DRI
+     * drivers, and virtio-gpu.ko are already bundled (GPU Section 0
+     * investigation); this line was the only thing forcing pixman. */
+    if (access("/dev/dri/card0", F_OK) == 0)
+        setenv("WLR_RENDERER", "gles2", 1);
+    else
+        setenv("WLR_RENDERER", "pixman", 1);
     wl_list_init(&g_views);
 
     struct wl_display *display = wl_display_create();
