@@ -30,13 +30,13 @@ else
     LDLIBS    =
 endif
 
-# Source files in the 8-file core scope. luks.c and dm_crypt.c are not
-# part of this build; the LUKS API dispatchers in crypto.c return
-# WLT_CRYPTO_ERR_UNSUPPORTED until those modules are linked.
+# Source files. luks.c provides the LUKS2 cryptsetup-backed implementation
+# that the dispatchers in crypto.c forward to; it is part of this build.
 SRCS = crypto.c \
        keyvault.c \
        file_crypto.c \
-       secure_delete.c
+       secure_delete.c \
+       luks.c
 
 HEADERS = include/crypto.h \
           include/keyvault.h \

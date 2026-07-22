@@ -130,6 +130,43 @@ cp libwlt-sandbox.so $ROOTFS/usr/lib/ 2>/dev/null || true
 echo "libwlt-sandbox OK"
 cd $REPO
 
+echo "=== STEP 9.6: build libwlt-crypto.a (with luks.c) ==="
+CRYPTO=$REPO/src/userspace/wlt-crypto
+cd $CRYPTO
+make clean 2>/dev/null || true
+make 2>&1
+if [ $? -ne 0 ]; then echo "WLT-CRYPTO FAILED"; exit 1; fi
+cp libwlt-crypto.a $ROOTFS/usr/lib/ 2>/dev/null || true
+cp libwlt-crypto.so $ROOTFS/usr/lib/ 2>/dev/null || true
+mkdir -p $ROOTFS/usr/include/wlt-crypto
+cp include/crypto.h include/keyvault.h include/file_crypto.h $ROOTFS/usr/include/wlt-crypto/ 2>/dev/null || true
+echo "libwlt-crypto OK"
+cd $REPO
+
+echo "=== STEP 9.7: build libwlt-update.a (Ed25519, vendored libsodium) ==="
+UPDATE=$REPO/src/userspace/wlt-update
+SODIUM=$REPO/packages/sodium-libs
+cd $UPDATE
+make clean 2>/dev/null || true
+# Prefer vendored libsodium so HAVE_SODIUM is defined and Ed25519 verification
+# is compiled in; fall back to system pkg-config if the vendored copy is absent.
+if [ -f "$SODIUM/libsodium.a" ] && [ -d "$SODIUM/include" ]; then
+    # Vendored libsodium.a is not -fPIC, so it cannot link into the shared
+    # lib (.so); build only the static lib (.a), which is what the rootfs
+    # needs. Static .o files are compiled with -fPIC so they archive fine.
+    make libwlt-update.a CPPFLAGS="-Iinclude -I$SODIUM/include -D_GNU_SOURCE -DHAVE_SODIUM" \
+         LDLIBS="$SODIUM/libsodium.a" 2>&1
+else
+    make 2>&1
+fi
+if [ $? -ne 0 ]; then echo "WLT-UPDATE FAILED"; exit 1; fi
+cp libwlt-update.a $ROOTFS/usr/lib/ 2>/dev/null || true
+cp libwlt-update.so $ROOTFS/usr/lib/ 2>/dev/null || true
+mkdir -p $ROOTFS/usr/include/wlt-update
+cp include/update.h include/partition.h $ROOTFS/usr/include/wlt-update/ 2>/dev/null || true
+echo "libwlt-update OK"
+cd $REPO
+
 echo "=== STEP 10: Install vendored Tor runtime libs ==="
 TORLIBS=$REPO/packages/tor-libs
 if [ -d "$TORLIBS" ]; then

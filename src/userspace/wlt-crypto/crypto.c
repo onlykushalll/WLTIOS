@@ -24,6 +24,15 @@
  */
 wlt_crypto_error_t wlt_secure_delete_impl(const char *path, int passes);
 
+/* LUKS2 implementation (luks.c). Forward-declared here so the dispatchers
+ * below can forward to the real cryptsetup-backed impl. Signatures match
+ * the definitions in luks.c. */
+wlt_crypto_error_t wlt_crypto_luks_format_impl(const char *device, const char *key_id);
+wlt_crypto_error_t wlt_crypto_luks_open_impl(const char *device, const char *name,
+                                             const char *key_id);
+wlt_crypto_error_t wlt_crypto_luks_close_impl(const char *name);
+wlt_crypto_error_t wlt_crypto_luks_status_impl(const char *name, bool *is_open);
+
 /* ─── Module State ───────────────────────────────────── */
 
 static bool g_crypto_initialized = false;
@@ -216,11 +225,10 @@ wlt_crypto_decrypt_file(const char *path, const char *key_id)
 }
 
 /* ─── LUKS Disk Encryption (dispatch) ──────────────────
- * The LUKS2 + dm-crypt implementation lives in luks.c and dm_crypt.c,
- * which are NOT part of this 8-file build. When those modules are not
- * linked, the dispatchers validate input then return UNSUPPORTED so
- * callers can degrade gracefully. Linking luks.c replaces these
- * stubs with the real wlt_luks_*_impl forwarding.
+ * The LUKS2 implementation lives in luks.c, which IS part of this build
+ * (see Makefile SRCS). These dispatchers validate input then forward to
+ * the real wlt_crypto_luks_*_impl() in luks.c, which drives cryptsetup as
+ * an external tool (same pattern partition.c uses for mkfs.ext4/mount).
  */
 
 wlt_crypto_error_t
@@ -230,8 +238,7 @@ wlt_crypto_luks_format(const char *device, const char *key_id)
         return WLT_CRYPTO_ERR_KEYVAULT;
     if (!valid_device(device) || !valid_key_id(key_id))
         return WLT_CRYPTO_ERR_INVALID_ARG;
-    WLT_CRYPTO_LOG_ERR("luks_format: not built (requires luks.c module)");
-    return WLT_CRYPTO_ERR_UNSUPPORTED;
+    return wlt_crypto_luks_format_impl(device, key_id);
 }
 
 wlt_crypto_error_t
@@ -243,8 +250,7 @@ wlt_crypto_luks_open(const char *device, const char *name,
     if (!valid_device(device) || !valid_luks_name(name) ||
         !valid_key_id(key_id))
         return WLT_CRYPTO_ERR_INVALID_ARG;
-    WLT_CRYPTO_LOG_ERR("luks_open: not built (requires luks.c module)");
-    return WLT_CRYPTO_ERR_UNSUPPORTED;
+    return wlt_crypto_luks_open_impl(device, name, key_id);
 }
 
 wlt_crypto_error_t
@@ -252,8 +258,7 @@ wlt_crypto_luks_close(const char *name)
 {
     if (!valid_luks_name(name))
         return WLT_CRYPTO_ERR_INVALID_ARG;
-    WLT_CRYPTO_LOG_ERR("luks_close: not built (requires luks.c module)");
-    return WLT_CRYPTO_ERR_UNSUPPORTED;
+    return wlt_crypto_luks_close_impl(name);
 }
 
 wlt_crypto_error_t
@@ -261,10 +266,7 @@ wlt_crypto_luks_status(const char *name, bool *is_open)
 {
     if (!valid_luks_name(name) || is_open == NULL)
         return WLT_CRYPTO_ERR_INVALID_ARG;
-    /* No PD round-trip needed: report "not open" when the LUKS module
-     * is absent so boot logic does not block on a phantom mapper. */
-    *is_open = false;
-    return WLT_CRYPTO_ERR_UNSUPPORTED;
+    return wlt_crypto_luks_status_impl(name, is_open);
 }
 
 /* ─── Secure Delete ──────────────────────────────────── */

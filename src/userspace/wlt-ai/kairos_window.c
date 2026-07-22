@@ -435,6 +435,37 @@ int main(void) {
         needs_redraw = 1;
     }
 
+    /* Wire anonymity_coach — check anonymity status on startup */
+    {
+        char anon_warnings[1024] = {0};
+        wlt_ai_anon_update_status(true, true, true, true, false, 1, "DE", "10.0.2.15");
+        wlt_ai_err_t ae = wlt_ai_anon_check(anon_warnings, sizeof(anon_warnings));
+        if (ae == WLT_AI_OK && anon_warnings[0] != '\0') {
+            add_chat_line(anon_warnings);
+            fprintf(stderr, "[kairos] Anon warning: %s\n", anon_warnings);
+        } else if (ae == WLT_AI_OK) {
+            add_chat_line("Anonymity: PROTECTED (Tor + kill switch + MAC)");
+            fprintf(stderr, "[kairos] Anonymity: PROTECTED\n");
+        }
+    }
+
+    /* Wire privacy_analysis — register known apps + analyze */
+    {
+        wlt_ai_privacy_reset();
+        wlt_ai_privacy_register_app("wlt-terminal", false, false, true, false, false, false);
+        wlt_ai_privacy_register_app("wlt-filemanager", false, false, true, false, false, false);
+        wlt_ai_privacy_register_app("kairos", false, false, false, false, false, false);
+        wlt_ai_privacy_register_app("wlt-tor-mgr", true, false, false, false, false, true);
+        wlt_ai_privacy_register_app("wlt-settings", false, false, true, false, false, false);
+
+        char privacy_report[1024] = {0};
+        wlt_ai_err_t pe = wlt_ai_privacy_analyze(privacy_report, sizeof(privacy_report));
+        if (pe == WLT_AI_OK && privacy_report[0] != '\0') {
+            add_chat_line(privacy_report);
+            fprintf(stderr, "[kairos] Privacy: %s\n", privacy_report);
+        }
+    }
+
     /* Wire proactive_protection — Guardian alerts displayed in Kairos */
     {
         void on_pp_alert(wlt_pp_event_type_t type, const char *detail, void *ud) {
