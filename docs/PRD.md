@@ -108,22 +108,23 @@ Run in parallel deliberately — this has outperformed sequential phases
 because nothing blocks on anything unrelated, and each track gets audited
 independently before anything gets built on top of it.
 
-1. **seL4 unification + disk encryption** — reconcile the 32-bit (Key Vault/TorPD) vs. 64-bit (desktop) seL4 fork with real evidence; port Key Vault PD to 64-bit first as a de-risking step before retrying TorPD as a real second Linux guest VM. Bundled with real LUKS disk encryption against an actual virtual disk and a kexec-based kernel-space key wipe for real amnesia (not just clearing userspace secrets).
-2. **Kairos full feature wiring** — roughly 13 remaining `wlt-ai/` files (vision, anonymity coach, privacy analysis, sidebar, a Guardian-to-Kairos event bridge) that are real, compiling code, never wired into anything reachable by a user.
-3. **wlt-update + real package repo** — A/B partition update scheme (needs a design reality check — may not match how this project's boot process actually works yet), libsodium-backed Ed25519 package signing done properly (vendored/committed, not a scratch fix), and a second real installable package to prove the repo concept beyond one item.
+1. **seL4 unification** — reconcile the 32-bit (Key Vault/TorPD) vs. 64-bit (desktop) seL4 fork; the 64-bit Key Vault PD port hit a real blocker (VMM timer emulation broken in QEMU) — a research task is in flight to understand the exact failure before attempting a fix, rather than chasing it blind. Disk encryption (originally bundled with this track) is now done — see Section 4.
+2. **Wire `wlt-ai/tools.c` into the permission system** — the AI's entire tool-execution surface (open app, run shell command, change setting) currently runs with zero permission gating, found via a security review. Needs a new `wlt_perms_id_t` category added across several files that enumerate permission types, so it needs careful compile verification rather than a blind edit — in flight now.
+3. **Integration regression checks** — two changes from tonight's security fixes (the fail-open→fail-closed change in `launch.c`, the `popen`→`execv` rewrite in `tools.c`) need confirming the ordinary/happy-path case still works, not just that the vulnerability is closed.
+4. **GPU-accelerated compositor + design system** — the first real step toward the UI pillar (see Section 7 for the detailed breakdown). Just dispatched, no report yet.
+5. **wlt-update + real package repo** — A/B partition scheme, libsodium-backed Ed25519 signing (now real and verified — see Section 4), and proving the repo concept beyond one package.
 
 ## 6. Queued, Not Yet Started
 
 Pull from here when a track above lands. Don't improvise new scope ad hoc.
 
-- **GPU-accelerated compositor + design system** — scoped in detail below (Section 7); the first real step toward the UI pillar.
 - **Qwythos-9B AI model verification** — deliberately deferred until a bootable Debian live-USB environment frees enough real RAM to test it properly; timing is an explicit, later decision, not scheduled.
 - **Firewall PD + Boot Verifier PD** — blocked on however the seL4 unification track resolves; the same 32-bit/64-bit architecture questions apply to both.
 - **Real package repository hosting** (versus the current local-only proof)
 - **Tor Browser integration**
 - **Real hardware boot validation** — deferred indefinitely; QEMU remains the only proving ground unless this decision changes
 
-## 7. UI / Glassmorphism Track — Detailed Breakdown (queued)
+## 7. UI / Glassmorphism Track — Detailed Breakdown (active — just dispatched)
 
 The most-scoped-out queued item, since it's genuinely new territory with no prior work in this project to build on.
 
@@ -204,9 +205,9 @@ done. Treat this table as "what we're building toward," and Section 4 as
 | FR-ANON-03 | Kill switch | P0 — done |
 | FR-ANON-04 | DNS through Tor, no leaks | P0 — not independently verified |
 | FR-ANON-05 | Amnesic mode (RAM-only) | P0 — kexec-based real kernel-space wipe in progress |
-| FR-ANON-06 | Encrypted persistence (optional) | P1 — disk encryption audit in progress |
+| FR-ANON-06 | Encrypted persistence (optional) | P1 — LUKS backend real and verified (see 8.6); not yet wired to a user-facing "enable persistence" flow |
 | FR-ANON-07 | No telemetry, ever | P0 — no telemetry code exists, holds by default |
-| FR-ANON-08 | Secure delete | P1 — not started |
+| FR-ANON-08 | Secure delete | P1 — real (`secure_delete.c` wired via `wlt_crypto_shred`/`wlt_secure_delete_impl`, confirmed in `crypto.c`'s dispatch section) |
 | FR-ANON-09 | Compartmentalized identities | P2 — not started |
 | FR-ANON-10 | Tor circuit viewer | P1 — backend real (`wlt-tor-mgr`/`circuits.c` verified real), no UI wired yet |
 
@@ -215,7 +216,7 @@ done. Treat this table as "what we're building toward," and Section 4 as
 |---|---|---|
 | FR-SEC-01 | App sandboxing (cgroups + namespaces) | P0 — real, wired into launch.c |
 | FR-SEC-02 | App permission system | P0 — done, both branches tested |
-| FR-SEC-03 | Disk encryption (LUKS) | P0 — in progress |
+| FR-SEC-03 | Disk encryption (LUKS) | P0 — real, verified (`luks.c` genuinely wired to `cryptsetup`; `luksOpen`+mount needs root, a WSL2 limitation not a code gap) |
 | FR-SEC-04 | File encryption (per-file) | P1 — not started |
 | FR-SEC-05 | Verified boot | P0 — not started |
 | FR-SEC-06 | Privacy badges on apps | P1 — not started |
@@ -230,7 +231,7 @@ done. Treat this table as "what we're building toward," and Section 4 as
 | FR-PKG-03 | Update packages | P0 — not started |
 | FR-PKG-04 | Atomic updates | P0 — A/B design in progress |
 | FR-PKG-05 | Rollback | P1 — in progress |
-| FR-PKG-06 | Signed packages | P0 — in progress (libsodium/Ed25519) |
+| FR-PKG-06 | Signed packages | P0 — real (`libwlt-update.a` builds with vendored libsodium; `nm`-confirmed Ed25519 symbols referenced and linked) |
 | FR-PKG-07 | Delta updates | P2 — not started |
 | FR-PKG-08 | Offline install from cache | P1 — not started |
 
@@ -243,7 +244,7 @@ done. Treat this table as "what we're building toward," and Section 4 as
 | FR-AI-04 | Voice output (TTS) | P2 — audit-only |
 | FR-AI-05 | System control | P1 — real tool implementations exist (`tools.c`) |
 | FR-AI-06 | File search | P1 — real (`file_search.c` verified) |
-| FR-AI-07 | Privacy analysis | P2 — in progress |
+| FR-AI-07 | Privacy analysis | P2 — done, independently verified real (`wlt_ai_privacy_analyze` genuinely wired) |
 | FR-AI-08 | Runs locally by default | P1 — done (Qwen2.5-1.5B baseline proven; Qwythos-9B queued) |
 | FR-AI-09 | Optional cloud model support | P2 — stubbed only |
 
@@ -262,7 +263,7 @@ done. Treat this table as "what we're building toward," and Section 4 as
 |---|---|---|
 | FS-01 | ext4 support | P0 — inherited from Linux guest |
 | FS-02 | btrfs support | P1 — not started |
-| FS-03 | LUKS disk encryption | P0 — in progress |
+| FS-03 | LUKS disk encryption | P0 — real, verified (see FR-SEC-03) |
 | FS-04 | Read-only root | P1 — not started |
 | FS-05 | tmpfs for /tmp | P0 — inherited from Linux guest |
 | FS-06 | OverlayFS | P1 — not started |
