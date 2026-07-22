@@ -48,6 +48,33 @@ bin_dir(void) {
 #include <fcntl.h>
 #include <time.h>
 
+extern char **environ;
+
+/* Run an external program without a shell (closes G9/F8 shell injection).
+ * Returns 0 on success, -1 on failure. Child's stderr is redirected to
+ * /dev/null to preserve prior `2>/dev/null` UX. */
+static int
+run_prog(const char *path, char *const argv[])
+{
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execve(path, argv, environ);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+    return 0;
+}
+
 static wlt_pkg_database_t g_db;
 
 /* ─── Database persistence (simple line-based format) ─── */
@@ -55,22 +82,57 @@ static wlt_pkg_database_t g_db;
 static wlt_pkg_error_t
 db_save(void)
 {
-    FILE *f = fopen(db_file(), "w");
-    if (!f) return WLT_PKG_ERR_IO;
+    /* Atomic save: write to .tmp with O_EXCL|O_NOFOLLOW (closes symlink-swap
+     * race F2), fsync file + fsync dir (crash durability G3/C2), rename.
+     * Every fprintf return is checked (C-H9). On any error we unlink the
+     * tmp so a half-written file never replaces the live db. */
+    const char *db = db_file();
+    char tmp[512];
+    int nlen = snprintf(tmp, sizeof(tmp), "%s.tmp", db);
+    if (nlen < 0 || (size_t)nlen >= sizeof(tmp)) return WLT_PKG_ERR_INVALID_ARG;
 
-    for (size_t i = 0; i < g_db.count; i++)
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0 && errno == EEXIST) { (void)unlink(tmp); fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600); }
+    if (fd < 0) return WLT_PKG_ERR_IO;
+    FILE *f = fdopen(fd, "w");
+    if (!f) { close(fd); (void)unlink(tmp); return WLT_PKG_ERR_IO; }
+
+    wlt_pkg_error_t err = WLT_PKG_OK;
+    for (size_t i = 0; i < g_db.count && err == WLT_PKG_OK; i++)
     {
         wlt_pkg_package_t *p = &g_db.packages[i];
-        fprintf(f, "name=%s\n", p->name);
-        fprintf(f, "version=%s\n", p->version);
-        fprintf(f, "installed=%d\n", p->installed ? 1 : 0);
-        fprintf(f, "store_hash=%s\n", p->store_hash[0] ? p->store_hash : "none");
-        fprintf(f, "dep_count=%zu\n", p->dep_count);
-        for (size_t j = 0; j < p->dep_count; j++)
-            fprintf(f, "dep=%s\n", p->dependencies[j]);
-        fprintf(f, "---\n");
+        if (fprintf(f, "name=%s\n", p->name) < 0 ||
+            fprintf(f, "version=%s\n", p->version) < 0 ||
+            fprintf(f, "installed=%d\n", p->installed ? 1 : 0) < 0 ||
+            fprintf(f, "store_hash=%s\n", p->store_hash[0] ? p->store_hash : "none") < 0 ||
+            fprintf(f, "dep_count=%zu\n", p->dep_count) < 0) {
+            err = WLT_PKG_ERR_IO; break;
+        }
+        for (size_t j = 0; j < p->dep_count; j++) {
+            if (fprintf(f, "dep=%s\n", p->dependencies[j]) < 0) { err = WLT_PKG_ERR_IO; break; }
+        }
+        if (err != WLT_PKG_OK) break;
+        if (fprintf(f, "---\n") < 0) { err = WLT_PKG_ERR_IO; break; }
     }
-    fclose(f);
+
+    if (err == WLT_PKG_OK && fflush(f) != 0) err = WLT_PKG_ERR_IO;
+    if (err == WLT_PKG_OK && fsync(fileno(f)) < 0) err = WLT_PKG_ERR_IO;
+    if (fclose(f) != 0 && err == WLT_PKG_OK) err = WLT_PKG_ERR_IO;
+    if (err != WLT_PKG_OK) { (void)unlink(tmp); return err; }
+
+    if (rename(tmp, db) != 0) { (void)unlink(tmp); return WLT_PKG_ERR_IO; }
+
+    /* Best-effort fsync of the parent directory for crash durability. */
+    {
+        char dirbuf[512];
+        snprintf(dirbuf, sizeof(dirbuf), "%s", db);
+        char *slash = strrchr(dirbuf, '/');
+        if (slash) {
+            *slash = '\0';
+            int dfd = open(dirbuf, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+            if (dfd >= 0) { (void)fsync(dfd); close(dfd); }
+        }
+    }
     return WLT_PKG_OK;
 }
 
@@ -118,7 +180,11 @@ db_load(void)
         else if (strcmp(key, "store_hash") == 0)
             strncpy(cur->store_hash, val, sizeof(cur->store_hash) - 1);
         else if (strcmp(key, "dep_count") == 0)
+        {
             cur->dep_count = (size_t)atoi(val);
+            if (cur->dep_count > WLT_PKG_MAX_DEPS)
+                cur->dep_count = WLT_PKG_MAX_DEPS;
+        }
         else if (strcmp(key, "dep") == 0 && cur->dep_count < WLT_PKG_MAX_DEPS)
         {
             strncpy(cur->dependencies[cur->dep_count], val, WLT_PKG_MAX_NAME - 1);
@@ -226,16 +292,19 @@ wlt_pkg_install(const char *name)
         return WLT_PKG_ERR_IO;
     }
 
-    /* Extract tarball to store path using system("tar") */
-    char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "tar xzf '%s' -C '%s' 2>/dev/null", pkg_path, store_path);
-    int rc = system(cmd);
-    (void)rc;
-    if (rc != 0)
+    /* Extract tarball to store path via execve (no shell — closes G9/F8
+     * shell injection). Hardening flags drop setuid/setgid/preserved
+     * ownership so a malicious archive cannot plant privileged files. */
     {
-        /* Extraction failed — clean up */
-        rmdir(store_path);
-        return WLT_PKG_ERR_IO;
+        char *tar_argv[] = { (char *)"tar", (char *)"xzf", (char *)pkg_path,
+                             (char *)"-C", (char *)store_path,
+                             (char *)"--no-same-permissions", (char *)"--no-same-owner",
+                             NULL };
+        if (run_prog("/bin/tar", tar_argv) != 0) {
+            char *rm_argv[] = { (char *)"rm", (char *)"-rf", (char *)store_path, NULL };
+            (void)run_prog("/bin/rm", rm_argv);
+            return WLT_PKG_ERR_IO;
+        }
     }
 
     /* Create symlinks for binaries in store_path/usr/bin/ */
@@ -332,10 +401,9 @@ wlt_pkg_remove(const char *name)
             closedir(d);
         }
 
-        /* Remove store directory (recursive) */
-        char cmd[1024];
-        snprintf(cmd, sizeof(cmd), "rm -rf '%s' 2>/dev/null", store_path);
-        int rm_rc = system(cmd); (void)rm_rc;
+        /* Remove store directory (recursive) — execve, no shell (G9/F8). */
+        char *rm_argv[] = { (char *)"rm", (char *)"-rf", (char *)store_path, NULL };
+        (void)run_prog("/bin/rm", rm_argv);
     }
 
     /* Update database */
