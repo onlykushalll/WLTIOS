@@ -99,7 +99,7 @@ file_exists(const char *path)
 static const char *const g_id_names[WLT_PERM_COUNT] = {
     "network", "filesystem", "camera", "microphone", "location",
     "notifications", "clipboard", "contacts", "bluetooth", "usb",
-    "background", "autostart",
+    "background", "autostart", "system-control",
 };
 
 wlt_perms_id_t
@@ -132,7 +132,8 @@ wlt_perms_id_kind(wlt_perms_id_t id)
         return WLT_PERMS_KIND_FILESYSTEM;
     if (id >= WLT_PERM_CAMERA && id <= WLT_PERM_USB)
         return WLT_PERMS_KIND_TRI;
-    if (id == WLT_PERM_BACKGROUND || id == WLT_PERM_AUTOSTART)
+    if (id == WLT_PERM_BACKGROUND || id == WLT_PERM_AUTOSTART ||
+        id == WLT_PERM_SYSTEM_CONTROL)
         return WLT_PERMS_KIND_BOOL;
     return WLT_PERMS_KIND_TRI;  /* unreachable for valid ids */
 }

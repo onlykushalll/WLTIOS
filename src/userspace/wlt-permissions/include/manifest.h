@@ -59,7 +59,8 @@ typedef enum {
     WLT_PERM_USB           = 9,   /* tri-state range ends here   */
     WLT_PERM_BACKGROUND    = 10,  /* boolean range starts here   */
     WLT_PERM_AUTOSTART     = 11,  /* boolean range ends here     */
-    WLT_PERM_COUNT         = 12,
+    WLT_PERM_SYSTEM_CONTROL = 12, /* shell/setting exec (boolean) */
+    WLT_PERM_COUNT         = 13,
 } wlt_perms_id_t;
 
 /* Classification of a permission id. Drives value validation: a

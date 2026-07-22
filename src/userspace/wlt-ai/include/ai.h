@@ -216,6 +216,13 @@ void wlt_ai_clear_history(wlt_ai_ctx_t *ctx);
 wlt_ai_tool_result_t wlt_tool_open_app(const char *app_name);
 wlt_ai_tool_result_t wlt_tool_change_setting(const char *setting);
 wlt_ai_tool_result_t wlt_tool_run_command(const char *command);
+
+/* Permission guard for tool execution. Fail-closed: if no manager is
+ * set, or the app has no ALLOW grant for WLT_PERM_SYSTEM_CONTROL, all
+ * shell-command and setting-change tool calls are denied. mgr is a
+ * const wlt_PermsManager* (opaque here to avoid a hard wlt-permissions
+ * header dependency for all ai.h consumers). */
+void wlt_tool_set_perms_guard(const void *mgr, const char *app_id);
 wlt_ai_tool_result_t wlt_tool_file_search(const char *query);
 
 /* ------------------------------------------------------------------ */

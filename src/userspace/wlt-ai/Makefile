@@ -20,7 +20,7 @@
 CC       ?= cc
 AR       ?= ar
 CFLAGS   ?= -std=c11 -Wall -Wextra -Wpedantic -Wno-format-truncation -Wno-stringop-truncation -Wno-unused-function -Wno-maybe-uninitialized -Wno-format -O2 -g
-CPPFLAGS  = -Iinclude -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE
+CPPFLAGS  = -Iinclude -I../wlt-permissions/include -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE
 LDFLAGS  ?=
 
 # ---- Source files -------------------------------------------------

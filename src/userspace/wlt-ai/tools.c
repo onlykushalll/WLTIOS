@@ -18,6 +18,7 @@
  */
 
 #include "ai.h"
+#include "permissions.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +34,37 @@
 /* ------------------------------------------------------------------ */
 /* Internal helpers                                                   */
 /* ------------------------------------------------------------------ */
+
+/* ─── Permission guard (fail-closed) ───────────────────────
+ * If g_perms_mgr is NULL or the app has no ALLOW grant for
+ * WLT_PERM_SYSTEM_CONTROL, wlt_tool_run_command and
+ * wlt_tool_change_setting refuse to execute. This closes the
+ * audit gap (B.2): tool execution was ungated, unlike every app
+ * launched via wlt_sandbox_launch. */
+static const wlt_PermsManager *g_perms_mgr = NULL;
+static char g_perms_app_id[WLT_PERMS_MAX_NAME] = {0};
+
+void
+wlt_tool_set_perms_guard(const void *mgr, const char *app_id)
+{
+    g_perms_mgr = (const wlt_PermsManager *)mgr;
+    if (app_id) {
+        strncpy(g_perms_app_id, app_id, sizeof(g_perms_app_id) - 1);
+        g_perms_app_id[sizeof(g_perms_app_id) - 1] = '\0';
+    } else {
+        g_perms_app_id[0] = '\0';
+    }
+}
+
+static bool
+wlt_tool_perms_allowed(void)
+{
+    if (g_perms_mgr == NULL || g_perms_app_id[0] == '\0')
+        return false; /* fail-closed: no guard configured */
+    return wlt_perms_check(g_perms_mgr, g_perms_app_id,
+                           WLT_PERM_SYSTEM_CONTROL) ==
+           WLT_PERMS_DECISION_ALLOW;
+}
 
 /* Known application registry â maps friendly names to binaries */
 typedef struct {
@@ -411,6 +443,16 @@ wlt_tool_change_setting(const char *setting)
 
     memset(&result, 0, sizeof(result));
 
+    /* Permission gate (fail-closed): setting changes require
+     * an explicit ALLOW grant for WLT_PERM_SYSTEM_CONTROL. */
+    if (!wlt_tool_perms_allowed()) {
+        result.success = false;
+        strncpy(result.output,
+                "[Setting change denied: no system-control permission]",
+                sizeof(result.output) - 1);
+        return result;
+    }
+
     if (setting == NULL || setting[0] == '\0') {
         result.success = false;
         strncpy(result.output, "[No setting specified]",
@@ -463,6 +505,16 @@ wlt_tool_run_command(const char *command)
     char clean[WLT_AI_CMD_LEN];
 
     memset(&result, 0, sizeof(result));
+
+    /* Permission gate (fail-closed): shell execution requires
+     * an explicit ALLOW grant for WLT_PERM_SYSTEM_CONTROL. */
+    if (!wlt_tool_perms_allowed()) {
+        result.success = false;
+        strncpy(result.output,
+                "[Command denied: no system-control permission]",
+                sizeof(result.output) - 1);
+        return result;
+    }
 
     if (command == NULL || command[0] == '\0') {
         result.success = false;
