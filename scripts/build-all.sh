@@ -19,8 +19,9 @@ echo "=== STEP 2: compile compositor ==="
 cp $COMP/include/compositor.h /tmp/compositor.h
 gcc -DWLR_USE_UNSTABLE -I /tmp -I $COMP \
     $(pkg-config --cflags wlroots-0.18 wayland-server libdrm pixman-1 xkbcommon) \
-    $COMP/compositor.c $COMP/comp_main.c \
-    $(pkg-config --libs wlroots-0.18 wayland-server libdrm pixman-1 xkbcommon) \
+    $COMP/compositor.c $COMP/comp_main.c $COMP/blur.c \
+    $(pkg-config --cflags glesv2 egl 2>/dev/null) \
+    $(pkg-config --libs wlroots-0.18 wayland-server libdrm pixman-1 xkbcommon glesv2 egl 2>/dev/null) -lm \
     -o /tmp/wlt-compositor 2>&1
 if [ $? -ne 0 ]; then echo "COMPOSITOR FAILED"; exit 1; fi
 cp /tmp/wlt-compositor $ROOTFS/usr/bin/wlt-compositor && chmod 755 $ROOTFS/usr/bin/wlt-compositor
@@ -72,7 +73,7 @@ echo "libwlt-ai.a OK"
 echo "=== STEP 7: compile kairos window (links libwlt-ai.a) ==="
 gcc -O2 -Wall -I /tmp -I $AI/include $(pkg-config --cflags wayland-client) \
     $AI/kairos_window.c /tmp/xdg-shell-client-protocol.c \
-    -L $AI -lwlt-ai $(pkg-config --libs wayland-client) -o /tmp/kairos-window 2>&1
+    -L $AI -lwlt-ai -L $REPO/src/userspace/wlt-permissions -lwlt-permissions $(pkg-config --libs wayland-client) -o /tmp/kairos-window 2>&1
 if [ $? -ne 0 ]; then echo "KAIROS FAILED"; exit 1; fi
 cp /tmp/kairos-window $ROOTFS/usr/bin/kairos-window && chmod 755 $ROOTFS/usr/bin/kairos-window
 echo "kairos window OK"

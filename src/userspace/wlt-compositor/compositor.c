@@ -688,7 +688,17 @@ wlt_comp_init(wlt_comp_state_t *state)
     state->wl_backend = backend;
 
     struct wlr_renderer *renderer = wlr_renderer_autocreate(backend);
+    /* GPU-A fallback: if GLES2 failed (EGL can't init in some QEMU configs
+     * without a GL display backend), retry with pixman. This keeps the
+     * compositor booting even when the virtual GPU can't provide a real
+     * GLES2 context — graceful degradation instead of a crash. */
+    if (renderer == NULL && access("/dev/dri/card0", F_OK) == 0) {
+        fprintf(stderr, "[compositor] GLES2 renderer failed; falling back to pixman\n");
+        setenv("WLR_RENDERER", "pixman", 1);
+        renderer = wlr_renderer_autocreate(backend);
+    }
     if (renderer == NULL) {
+        fprintf(stderr, "[compositor] all renderers failed\n");
         wl_display_destroy(display);
         return WLT_COMP_ERR_RENDERER;
     }
