@@ -17,6 +17,7 @@
 
 #include "update.h"
 #include "partition.h"
+#include "rollback.h"  /* anti-rollback counter (research-I R2) */
 
 #include <stdlib.h>
 #include <string.h>
@@ -323,6 +324,7 @@ parse_manifest(FILE *fp, wlt_UpdateVersion *out)
         else if (strcmp(key, "url") == 0) { wlt_strlcpy(out->url, val, sizeof(out->url)); }
         else if (strcmp(key, "size") == 0) { out->size = (uint64_t)strtoull(val, NULL, 10); }
         else if (strcmp(key, "sig_url") == 0) { wlt_strlcpy(out->sig_url, val, sizeof(out->sig_url)); }
+        else if (strcmp(key, "rollback_index") == 0) { out->rollback_index = strtoull(val, NULL, 10); }
     }
     if (out->version[0] == '\0' || out->url[0] == '\0') { return WLT_UPDATE_ERR_INVALID_ARG; }
     return WLT_UPDATE_OK;
@@ -351,6 +353,7 @@ status_read(wlt_UpdateStatus *st)
         if (strcmp(key, "pending_reboot") == 0) { st->pending_reboot = (strcmp(val, "yes") == 0); }
         else if (strcmp(key, "update_available") == 0) { st->update_available = (strcmp(val, "yes") == 0); }
         else if (strcmp(key, "pending_version") == 0) { wlt_strlcpy(st->pending_version, val, sizeof(st->pending_version)); }
+        else if (strcmp(key, "pending_rollback_index") == 0) { st->pending_rollback_index = strtoull(val, NULL, 10); }
         else if (strcmp(key, "last_update_time") == 0) { wlt_strlcpy(st->last_update_time, val, sizeof(st->last_update_time)); }
         else if (strcmp(key, "auto_update") == 0) { st->auto_update = (strcmp(val, "yes") == 0); }
         else if (strcmp(key, "last_error") == 0) { wlt_strlcpy(st->last_error, val, sizeof(st->last_error)); }
@@ -374,6 +377,7 @@ status_write(const wlt_UpdateStatus *st)
     fprintf(fp, "pending_reboot = %s\n", st->pending_reboot ? "yes" : "no");
     fprintf(fp, "update_available = %s\n", st->update_available ? "yes" : "no");
     fprintf(fp, "pending_version = %s\n", st->pending_version);
+    fprintf(fp, "pending_rollback_index = %llu\n", (unsigned long long)st->pending_rollback_index);
     fprintf(fp, "last_update_time = %s\n", st->last_update_time[0] ? st->last_update_time : "never");
     fprintf(fp, "auto_update = %s\n", st->auto_update ? "yes" : "no");
     fprintf(fp, "last_error = %s\n", st->last_error[0] ? st->last_error : "none");
@@ -486,8 +490,22 @@ wlt_update_check(wlt_UpdateVersion *out)
         (void)status_write(&st);
         return WLT_UPDATE_ERR_ALREADY_UP_TO_DATE;
     }
+    /* Anti-rollback check (research-I R2): refuse to report an update
+     * as available if its rollback_index is lower than the stored
+     * counter. Prevents downgrade attacks before any download. */
+    err = wlt_rollback_check(out->rollback_index);
+    if (err != WLT_UPDATE_OK) {
+        st.update_available = false;
+        st.pending_version[0] = '\0';
+        (void)status_write(&st);
+        WLT_UPDATE_LOG_ERR("check: rollback refused for version %s "
+                          "(index %llu)", out->version,
+                          (unsigned long long)out->rollback_index);
+        return err;
+    }
     st.update_available = true;
     wlt_strlcpy(st.pending_version, out->version, sizeof(st.pending_version));
+    st.pending_rollback_index = out->rollback_index;
     st.last_error[0] = '\0';
     (void)status_write(&st);
     WLT_UPDATE_LOG_INF("update available: %s", out->version);
@@ -638,6 +656,15 @@ wlt_update_install(const char *package_path)
     err = wlt_boot_config_save(g_config.boot_config_path, &cfg);
     if (err != WLT_UPDATE_OK) { set_last_error("install: boot config write failed"); close(lock_fd); return err; }
 
+    /* Anti-rollback: bump the counter to the installed package's
+     * rollback_index so future downgrades are refused (research-I R2). */
+    if (st.pending_rollback_index > 0) {
+        wlt_update_error_t rb_err = wlt_rollback_bump(st.pending_rollback_index);
+        if (rb_err != WLT_UPDATE_OK) {
+            WLT_UPDATE_LOG_ERR("install: rollback bump failed (non-fatal): %s",
+                              wlt_update_error_str(rb_err));
+        }
+    }
     st.pending_reboot = true;
     st.last_error[0] = '\0';
     stamp_now(st.last_update_time, sizeof(st.last_update_time));

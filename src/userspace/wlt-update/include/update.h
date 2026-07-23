@@ -52,6 +52,7 @@ typedef enum {
 #define WLT_UPDATE_CONFIG_PATH        "/etc/wlt/update.conf"
 #define WLT_UPDATE_BOOT_CONFIG_PATH   "/boot/wltios.conf"
 #define WLT_UPDATE_STATUS_PATH        "/var/lib/wlt/update.status"
+#define WLT_UPDATE_ROLLBACK_PATH      "/var/lib/wlt/rollback.counter"
 #define WLT_UPDATE_HISTORY_PATH       "/var/log/wlt/update.history"
 #define WLT_UPDATE_DOWNLOAD_DIR       "/var/cache/wlt-update"
 #define WLT_UPDATE_PUBKEY_PATH        "/etc/wlt/keys/update-pubkey.bin"
@@ -93,6 +94,7 @@ typedef struct {
     char     url[WLT_UPDATE_MAX_URL];         /* .wlt-update.tar.zst URL  */
     uint64_t size;                            /* expected package bytes   */
     char     sig_url[WLT_UPDATE_MAX_URL];     /* detached signature URL   */
+    uint64_t rollback_index;                 /* anti-rollback (0 = oldest) */
 } wlt_UpdateVersion;
 
 /** Snapshot of update state (for `wltupdate status` / WLT-Settings). */
@@ -102,6 +104,7 @@ typedef struct {
     bool pending_reboot;
     bool update_available;
     char pending_version[WLT_UPDATE_MAX_VERSION];
+    uint64_t pending_rollback_index;  /* anti-rollback (0 = unrestricted) */
     char last_update_time[32];
     bool auto_update;
     char last_error[64];

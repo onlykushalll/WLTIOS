@@ -36,7 +36,8 @@ endif
 SRCS = update.c \
        partition.c \
        verify.c \
-       config.c
+       config.c \
+       rollback.c
 
 HEADERS = include/update.h \
           include/partition.h
