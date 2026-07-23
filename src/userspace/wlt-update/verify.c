@@ -333,6 +333,33 @@ wlt_update_verify_manifest(const char *manifest_path,
         return err;
     }
 
+    /* R7 key chain + rotation: if the manifest names a key_id, look it up
+     * in the keyring and RE-VERIFY the signature with that key. This is the
+     * actual rotation mechanism — a manifest signed by a retired key
+     * (not in the keyring, or expired) is refused even if it happens to
+     * verify against the legacy single pubkey. When no keyring exists or
+     * key_id is empty, fall back to the pubkey_path verification above
+     * (backward-compatible). */
+    if (out->key_id[0] != '\0') {
+        uint8_t kr_pubkey[WLT_UPDATE_ED25519_PUBKEY_LEN];
+        wlt_update_error_t kr_err = wlt_keyring_find(out->key_id, kr_pubkey);
+        if (kr_err != WLT_UPDATE_OK) {
+            WLT_UPDATE_LOG_ERR("manifest key_id '%s' not in keyring (revoked?)",
+                               out->key_id);
+            return WLT_UPDATE_ERR_SIGNATURE;
+        }
+        /* Re-verify with the keyring's pubkey. If the manifest was signed
+         * by a different key than key_id claims, this fails. */
+        if (crypto_sign_ed25519_verify_detached(sig, (unsigned char *)buf, n,
+                                                kr_pubkey) != 0) {
+            WLT_UPDATE_LOG_ERR("manifest signature does not match keyring "
+                               "key_id '%s'", out->key_id);
+            return WLT_UPDATE_ERR_SIGNATURE;
+        }
+        WLT_UPDATE_LOG_DBG("manifest verified via keyring (key_id=%s)",
+                           out->key_id);
+    }
+
     WLT_UPDATE_LOG_DBG("manifest OK: version=%s rollback=%llu slot=%c",
                        out->version, (unsigned long long)out->rollback_index,
                        out->target_slot);
