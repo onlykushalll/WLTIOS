@@ -259,6 +259,12 @@ parse_manifest_file(FILE *fp, wlt_UpdateManifest *out)
             out->target_slot = val[0];
         else if (strcmp(key, "sha256") == 0)
             wlt_strlcpy(out->sha256_hex, val, sizeof(out->sha256_hex));
+        else if (strcmp(key, "verity_root_hash") == 0)
+            wlt_strlcpy(out->verity_root_hash, val, sizeof(out->verity_root_hash));
+        else if (strcmp(key, "verity_salt") == 0)
+            wlt_strlcpy(out->verity_salt, val, sizeof(out->verity_salt));
+        else if (strcmp(key, "verity_size") == 0)
+            out->verity_size = strtoull(val, NULL, 10);
     }
     if (out->version[0] == '\0' || out->sha256_hex[0] == '\0')
         return WLT_UPDATE_ERR_INVALID_ARG;

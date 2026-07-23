@@ -181,6 +181,15 @@ typedef struct {
     uint64_t rollback_index;
     char     target_slot;        /* 'A', 'B', or '*' (any) */
     char     sha256_hex[65];     /* 64 hex chars + NUL */
+    /* dm-verity (research-I R6): root hash + salt + hash area size for
+     * the slot image. When present, the initrd runs `veritysetup open`
+     * before switch_root so the active slot is mounted read-only with
+     * block-level integrity verification. Generated at build time via
+     * `veritysetup format`; the signed manifest binds them so a tampered
+     * image cannot be mounted. See research-P-dm-verity in worklog. */
+    char     verity_root_hash[65]; /* 64 hex chars + NUL, or empty if none */
+    char     verity_salt[65];      /* 64 hex chars + NUL */
+    uint64_t verity_size;         /* hash area size in bytes (for --hash-offset) */
 } wlt_UpdateManifest;
 
 /* Verify a signed manifest file. Loads + verifies the Ed25519 signature,
