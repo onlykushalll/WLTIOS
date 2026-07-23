@@ -160,6 +160,41 @@ wlt_update_error_t wlt_update_history(wlt_UpdateHistoryEntry *entries,
 wlt_update_error_t wlt_update_verify_file(const char *path,
                                           const char *sig_path,
                                           const char *pubkey_path);
+
+/* ─── Signed manifest (research-I R5) ───────────────────────────
+ * Binds the package blob to its version, rollback_index, target slot,
+ * and SHA-256 hash — all Ed25519-signed. Without this, the signature
+ * covers only the raw blob and an attacker can replay an old validly-
+ * signed package for a different slot or version (signature replay).
+ *
+ * The manifest is a small text file alongside the package:
+ *   version=1.2.3
+ *   rollback_index=42
+ *   target_slot=A
+ *   sha256=<64 hex chars>
+ * The manifest is Ed25519-signed (detached .manifest.sig) with the same
+ * key as the blob. verify flow: check manifest sig -> check blob sha256
+ * matches manifest -> check version/counter against stored state. */
+
+typedef struct {
+    char     version[WLT_UPDATE_MAX_VERSION];
+    uint64_t rollback_index;
+    char     target_slot;        /* 'A', 'B', or '*' (any) */
+    char     sha256_hex[65];     /* 64 hex chars + NUL */
+} wlt_UpdateManifest;
+
+/* Verify a signed manifest file. Loads + verifies the Ed25519 signature,
+ * parses the manifest fields. Returns WLT_UPDATE_ERR_SIGNATURE if the
+ * manifest signature is invalid, INVALID_ARG if malformed. */
+wlt_update_error_t wlt_update_verify_manifest(const char *manifest_path,
+                                              const char *manifest_sig_path,
+                                              const char *pubkey_path,
+                                              wlt_UpdateManifest *out);
+
+/* Compute the SHA-256 of a file (streamed, for large packages).
+ * Writes 64 hex chars + NUL to out_hex (capacity >= 65). */
+wlt_update_error_t wlt_update_compute_sha256(const char *path,
+                                            char *out_hex, size_t out_hex_size);
 wlt_update_error_t wlt_update_verify_buffer(const uint8_t *data, size_t len,
                                             const uint8_t *sig,
                                             const uint8_t *pubkey);

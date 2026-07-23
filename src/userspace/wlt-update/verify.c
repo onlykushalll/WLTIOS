@@ -230,3 +230,156 @@ wlt_update_verify_file(const char *path,
     return WLT_UPDATE_OK;
 #endif
 }
+
+/* ─── Signed manifest (research-I R5) ───────────────────────────
+ * The functions below implement the signed-manifest verification that
+ * binds an Ed25519 signature to {version, rollback_index, target_slot,
+ * sha256(blob)} so a validly-signed package cannot be replayed against
+ * a different slot or a rolled-back version. */
+
+/* Parse a manifest KV file (same format as the manifest in update.c).
+ * Lines: version=X, rollback_index=N, target_slot=A, sha256=<hex>. */
+static wlt_update_error_t
+parse_manifest_file(FILE *fp, wlt_UpdateManifest *out)
+{
+    char line[WLT_UPDATE_MAX_LINE];
+    char key[WLT_UPDATE_MAX_LINE];
+    char val[WLT_UPDATE_MAX_LINE];
+    memset(out, 0, sizeof(*out));
+    out->target_slot = '*';  /* default: any slot */
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        if (!wlt_config_parse_kv(line, key, sizeof(key), val, sizeof(val)))
+            continue;
+        if (strcmp(key, "version") == 0)
+            wlt_strlcpy(out->version, val, sizeof(out->version));
+        else if (strcmp(key, "rollback_index") == 0)
+            out->rollback_index = strtoull(val, NULL, 10);
+        else if (strcmp(key, "target_slot") == 0)
+            out->target_slot = val[0];
+        else if (strcmp(key, "sha256") == 0)
+            wlt_strlcpy(out->sha256_hex, val, sizeof(out->sha256_hex));
+    }
+    if (out->version[0] == '\0' || out->sha256_hex[0] == '\0')
+        return WLT_UPDATE_ERR_INVALID_ARG;
+    return WLT_UPDATE_OK;
+}
+
+/* Verify the manifest's own Ed25519 signature, then parse it.
+ * The manifest is small (a few hundred bytes) so we read it whole
+ * into a stack buffer and use crypto_sign_verify_detached (not the
+ * streaming API). */
+wlt_update_error_t
+wlt_update_verify_manifest(const char *manifest_path,
+                          const char *manifest_sig_path,
+                          const char *pubkey_path,
+                          wlt_UpdateManifest *out)
+{
+    if (manifest_path == NULL || manifest_sig_path == NULL ||
+        pubkey_path == NULL || out == NULL)
+        return WLT_UPDATE_ERR_INVALID_ARG;
+
+#ifndef HAVE_SODIUM
+    WLT_UPDATE_LOG_ERR("manifest verify: built without libsodium");
+    return WLT_UPDATE_ERR_UNSUPPORTED;
+#else
+    uint8_t pubkey[WLT_UPDATE_ED25519_PUBKEY_LEN];
+    uint8_t sig[WLT_UPDATE_ED25519_SIG_LEN];
+    wlt_update_error_t err = load_pubkey(pubkey_path, pubkey);
+    if (err != WLT_UPDATE_OK) return err;
+    err = load_signature(manifest_sig_path, sig);
+    if (err != WLT_UPDATE_OK) return err;
+
+    /* Read the whole manifest into memory (it's small). */
+    FILE *fp = fopen(manifest_path, "rb");
+    if (fp == NULL) return WLT_UPDATE_ERR_NOT_FOUND;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    /* Drain to detect truncation/oversize. */
+    uint8_t extra;
+    if (fread(&extra, 1, 1, fp) > 0) {
+        fclose(fp);
+        WLT_UPDATE_LOG_ERR("manifest too large (> %zu bytes)", sizeof(buf)-1);
+        return WLT_UPDATE_ERR_INVALID_ARG;
+    }
+    fclose(fp);
+    buf[n] = '\0';
+
+    if (sodium_init() < 0) return WLT_UPDATE_ERR_UNSUPPORTED;
+
+    /* Verify the manifest signature. */
+    if (crypto_sign_ed25519_verify_detached(sig, (unsigned char *)buf, n,
+                                            pubkey) != 0) {
+        WLT_UPDATE_LOG_ERR("manifest signature verification FAILED");
+        return WLT_UPDATE_ERR_SIGNATURE;
+    }
+
+    /* Parse the manifest fields. */
+    FILE *mp = fmemopen(buf, n, "r");
+    if (mp == NULL) return WLT_UPDATE_ERR_IO;
+    err = parse_manifest_file(mp, out);
+    fclose(mp);
+    if (err != WLT_UPDATE_OK) {
+        WLT_UPDATE_LOG_ERR("manifest malformed");
+        return err;
+    }
+
+    WLT_UPDATE_LOG_DBG("manifest OK: version=%s rollback=%llu slot=%c",
+                       out->version, (unsigned long long)out->rollback_index,
+                       out->target_slot);
+    return WLT_UPDATE_OK;
+#endif
+}
+
+/* Compute the SHA-256 of a file (streamed). Writes 64 lowercase hex
+ * chars + NUL to out_hex. Used to verify the blob matches the manifest. */
+wlt_update_error_t
+wlt_update_compute_sha256(const char *path, char *out_hex, size_t out_hex_size)
+{
+    if (path == NULL || out_hex == NULL || out_hex_size < 65)
+        return WLT_UPDATE_ERR_INVALID_ARG;
+
+#ifndef HAVE_SODIUM
+    WLT_UPDATE_LOG_ERR("sha256: built without libsodium");
+    return WLT_UPDATE_ERR_UNSUPPORTED;
+#else
+    if (sodium_init() < 0) return WLT_UPDATE_ERR_UNSUPPORTED;
+
+    FILE *fp = fopen(path, "rb");
+    if (fp == NULL) return WLT_UPDATE_ERR_NOT_FOUND;
+
+    crypto_generichash_state st;
+    if (crypto_generichash_init(&st, NULL, 0, crypto_generichash_BYTES) != 0) {
+        fclose(fp);
+        return WLT_UPDATE_ERR_IO;
+    }
+
+    uint8_t *buf = malloc(WLT_UPDATE_CHUNK_SIZE);
+    if (buf == NULL) { fclose(fp); return WLT_UPDATE_ERR_NOMEM; }
+
+    for (;;) {
+        size_t n = fread(buf, 1, WLT_UPDATE_CHUNK_SIZE, fp);
+        if (n == 0) {
+            if (ferror(fp)) { fclose(fp); free(buf); return WLT_UPDATE_ERR_IO; }
+            break;
+        }
+        if (crypto_generichash_update(&st, buf, n) != 0) {
+            fclose(fp); free(buf); return WLT_UPDATE_ERR_IO;
+        }
+    }
+    fclose(fp);
+    free(buf);
+
+    uint8_t hash[crypto_generichash_BYTES];  /* 32 bytes */
+    if (crypto_generichash_final(&st, hash, sizeof(hash)) != 0)
+        return WLT_UPDATE_ERR_IO;
+
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(hash); i++) {
+        out_hex[i * 2]     = hex[(hash[i] >> 4) & 0xf];
+        out_hex[i * 2 + 1] = hex[hash[i] & 0xf];
+    }
+    out_hex[64] = '\0';
+    return WLT_UPDATE_OK;
+#endif
+}

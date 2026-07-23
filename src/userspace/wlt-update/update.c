@@ -630,6 +630,78 @@ wlt_update_install(const char *package_path)
     err = wlt_update_verify_file(pkg_fd_path, sig_path, g_config.pubkey_path);
     if (err != WLT_UPDATE_OK) { set_last_error("install: signature FAILED"); close(pkg_fd); close(lock_fd); return err; }
 
+    /* Signed manifest check (research-I R5): if a .manifest file exists
+     * alongside the package, verify its Ed25519 signature and check that
+     * the blob's SHA-256 matches + the version/rollback_index bind. This
+     * prevents signature replay (same validly-signed blob applied to a
+     * different slot or rolled-back version). If no manifest exists,
+     * log a warning and proceed (backward-compatible). */
+    {
+        char manifest_path[WLT_UPDATE_MAX_PATH];
+        char manifest_sig_path[WLT_UPDATE_MAX_PATH];
+        snprintf(manifest_path, sizeof(manifest_path), "%s.manifest", package_path);
+        snprintf(manifest_sig_path, sizeof(manifest_sig_path), "%s.manifest.sig", package_path);
+        if (access(manifest_path, F_OK) == 0 && access(manifest_sig_path, F_OK) == 0) {
+            wlt_UpdateManifest mfst;
+            err = wlt_update_verify_manifest(manifest_path, manifest_sig_path,
+                                             g_config.pubkey_path, &mfst);
+            if (err != WLT_UPDATE_OK) {
+                set_last_error("install: manifest signature FAILED");
+                close(pkg_fd); close(lock_fd);
+                return err;
+            }
+            /* Check the blob SHA-256 matches the manifest. */
+            char blob_hash[65];
+            err = wlt_update_compute_sha256(pkg_fd_path, blob_hash, sizeof(blob_hash));
+            if (err != WLT_UPDATE_OK) {
+                set_last_error("install: cannot hash package");
+                close(pkg_fd); close(lock_fd);
+                return err;
+            }
+            if (memcmp(blob_hash, mfst.sha256_hex, 64) != 0) {
+                WLT_UPDATE_LOG_ERR("install: blob SHA-256 mismatch (manifest=%s actual=%s)",
+                                   mfst.sha256_hex, blob_hash);
+                set_last_error("install: blob hash does not match manifest");
+                close(pkg_fd); close(lock_fd);
+                return WLT_UPDATE_ERR_SIGNATURE;
+            }
+            /* Check target_slot matches the inactive slot (if manifest specifies). */
+            if (mfst.target_slot != '*') {
+                char want = (inactive == WLT_PARTITION_A) ? 'A' : 'B';
+                if (mfst.target_slot != want) {
+                    WLT_UPDATE_LOG_ERR("install: manifest targets slot %c but inactive is %c",
+                                       mfst.target_slot, want);
+                    set_last_error("install: manifest targets wrong slot");
+                    close(pkg_fd); close(lock_fd);
+                    return WLT_UPDATE_ERR_INVALID_ARG;
+                }
+            }
+            /* Check rollback_index against the stored counter (defense-in-depth:
+             * wlt_update_check already did this, but re-check at install time
+             * in case the counter changed between check and install). */
+            err = wlt_rollback_check(mfst.rollback_index);
+            if (err != WLT_UPDATE_OK) {
+                set_last_error("install: manifest rollback_index refused");
+                close(pkg_fd); close(lock_fd);
+                return err;
+            }
+            WLT_UPDATE_LOG_INF("install: manifest verified (version=%s rollback=%llu slot=%c)",
+                               mfst.version, (unsigned long long)mfst.rollback_index,
+                               mfst.target_slot);
+            /* Store the manifest's rollback_index so the install bump uses it. */
+            {
+                wlt_UpdateStatus st2;
+                (void)status_read(&st2);
+                st2.pending_rollback_index = mfst.rollback_index;
+                wlt_strlcpy(st2.pending_version, mfst.version, sizeof(st2.pending_version));
+                (void)status_write(&st2);
+            }
+        } else {
+            WLT_UPDATE_LOG_ERR("install: no signed manifest — signature replay possible "
+                               "(research-I R5); proceeding for backward-compat");
+        }
+    }
+
     err = wlt_partition_format(inactive);
     if (err != WLT_UPDATE_OK) { set_last_error("install: format failed"); close(pkg_fd); close(lock_fd); return err; }
     err = wlt_partition_mount(inactive);
