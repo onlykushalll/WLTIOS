@@ -26,6 +26,7 @@
 #include <wlr/backend/headless.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/render/allocator.h>
+#include "blur.h"  /* GPU Section B: dual-pass Gaussian backdrop blur */
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_seat.h>
@@ -59,6 +60,7 @@ static struct wlr_cursor *g_cursor = NULL;
 static struct wlr_xcursor_manager *g_xcursor_mgr = NULL;
 static struct wlr_output *g_active_output = NULL;
 static int g_frame_count = 0;
+static wlt_blur_t *g_blur = NULL;  /* lazy-init on first frame */
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  VIEW TRACKING — track XDG surfaces for focus + window management
@@ -547,6 +549,27 @@ static void handle_output_frame(struct wl_listener *listener, void *data) {
     if (scene_out) {
         if (g_frame_count <= 10) {
             fprintf(stderr, "[compositor] frame %d: rendering+committing\n", g_frame_count);
+        }
+        /* GPU Section B: apply backdrop blur as a post-process pass.
+         * Lazy-init the blur shader on the first frame, then apply it
+         * over the lower third of the screen (taskbar region) as the
+         * proof-of-concept blurred surface per PRD Section 7 Phase 2.
+         * The blur reads the just-composited scene and writes the
+         * blurred result back before the output commit. */
+        int out_w = output->width;
+        int out_h = output->height;
+        if (out_w > 0 && out_h > 0) {
+            if (!g_blur) {
+                g_blur = wlt_blur_create(10);  /* 10px sigma ~ radius 12 */
+                if (g_blur) {
+                    fprintf(stderr, "[compositor] backdrop blur enabled (10px)\n");
+                }
+            }
+            if (g_blur) {
+                /* Blur the taskbar strip: lower 48px of the output. */
+                int bar_h = out_h > 48 ? 48 : out_h / 8;
+                wlt_blur_apply(g_blur, 0, 0, out_w, bar_h, out_w, out_h);
+            }
         }
         wlr_scene_output_commit(scene_out, NULL);
     } else if (g_frame_count <= 10) {
