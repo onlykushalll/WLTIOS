@@ -17,6 +17,7 @@
 #include "file_crypto.h"
 
 #include <string.h>
+#include <unistd.h>  /* close() for key_fd in luks dispatchers */
 
 /* ─── Forward Declarations ─────────────────────────────
  * secure_delete.c is part of this build but has no public header; the
@@ -260,20 +261,20 @@ wlt_crypto_luks_format(const char *device, const char *key_id)
         return WLT_CRYPTO_ERR_KEYVAULT;
     if (!valid_device(device) || !valid_key_id(key_id))
         return WLT_CRYPTO_ERR_INVALID_ARG;
-    /* FIX D-1: FAIL CLOSED. The public API keeps the historical
-     * (device, key_id) signature, but the underlying _impl now
-     * requires a key_fd sourced from the Key Vault PD. Until that
-     * integration lands (research-H), we pass key_fd=-1 and the
-     * _impl refuses with INVALID_ARG. The hardcoded passphrase
-     * path has been removed; we never silently format with a
-     * known key. */
-    (void)key_id;
-    wlt_crypto_error_t err = wlt_crypto_luks_format_impl(device, /*key_fd=*/-1);
-    if (err == WLT_CRYPTO_ERR_INVALID_ARG)
-    {
-        WLT_CRYPTO_LOG_ERR("luks_format: no key source configured "
-                           "(KeyVaultPD integration pending)");
+    /* Research-H integration: fetch the volume key from the KeyVaultPD
+     * bridge daemon via an AF_UNIX socket. The bridge (wlt-keyvault-bridge)
+     * talks to the seL4 KeyVaultPD over a Microkit channel + virtio-console.
+     * If the bridge is unavailable, fail CLOSED (never fall back to a
+     * hardcoded key). */
+    int key_fd = -1;
+    wlt_crypto_error_t kv_err = wlt_keyvault_get_volume_key_fd(key_id, &key_fd);
+    if (kv_err != WLT_CRYPTO_OK || key_fd < 0) {
+        WLT_CRYPTO_LOG_ERR("luks_format: KeyVaultPD bridge unavailable "
+                           "for key_id=%s (fail-closed)", key_id);
+        return WLT_CRYPTO_ERR_KEYVAULT;
     }
+    wlt_crypto_error_t err = wlt_crypto_luks_format_impl(device, key_fd);
+    close(key_fd);
     return err;
 }
 
@@ -286,15 +287,17 @@ wlt_crypto_luks_open(const char *device, const char *name,
     if (!valid_device(device) || !valid_luks_name(name) ||
         !valid_key_id(key_id))
         return WLT_CRYPTO_ERR_INVALID_ARG;
-    /* FIX D-1: FAIL CLOSED — see wlt_crypto_luks_format above. */
-    (void)key_id;
-    wlt_crypto_error_t err = wlt_crypto_luks_open_impl(device, name,
-                                                       /*key_fd=*/-1);
-    if (err == WLT_CRYPTO_ERR_INVALID_ARG)
-    {
-        WLT_CRYPTO_LOG_ERR("luks_open: no key source configured "
-                           "(KeyVaultPD integration pending)");
+    /* Research-H integration: fetch the volume key from the KeyVaultPD
+     * bridge daemon. Fail-closed if unavailable. */
+    int key_fd = -1;
+    wlt_crypto_error_t kv_err = wlt_keyvault_get_volume_key_fd(key_id, &key_fd);
+    if (kv_err != WLT_CRYPTO_OK || key_fd < 0) {
+        WLT_CRYPTO_LOG_ERR("luks_open: KeyVaultPD bridge unavailable "
+                           "for key_id=%s (fail-closed)", key_id);
+        return WLT_CRYPTO_ERR_KEYVAULT;
     }
+    wlt_crypto_error_t err = wlt_crypto_luks_open_impl(device, name, key_fd);
+    close(key_fd);
     return err;
 }
 

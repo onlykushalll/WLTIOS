@@ -165,6 +165,27 @@ wlt_crypto_error_t wlt_keyvault_get_volume_key(const char *key_id,
                                                uint8_t *key_out,
                                                size_t *key_len);
 
+/* Get the LUKS volume key as a file descriptor (pipe read end).
+ *
+ * This is the integration point for research-H's bridge architecture:
+ * the bridge daemon (wlt-keyvault-bridge) connects to the seL4 KeyVaultPD
+ * over a Microkit channel + virtio-console, and exposes the key via an
+ * AF_UNIX socket at /run/wlt-keyvault.sock. systemd-cryptsetup can read
+ * the key directly from this socket (its built-in AF_UNIX keyfile feature),
+ * OR luks.c can read the bytes from the returned fd and write them to a
+ * per-call keyfile (the current luks.c approach).
+ *
+ * When the bridge is not running (no KeyVaultPD), this returns
+ * WLT_CRYPTO_ERR_KEYVAULT — fail-closed, never falls back to a hardcoded key.
+ *
+ * @param key_id   Key ID whose volume key is requested
+ * @param fd_out   Output: pipe read-end fd with the key bytes (64 bytes).
+ *                 Caller MUST close(fd) after use (luks.c does this via
+ *                 the keyfile write loop + remove_keyfile).
+ * @returns WLT_CRYPTO_OK on success, KEYVAULT if bridge unavailable. */
+wlt_crypto_error_t wlt_keyvault_get_volume_key_fd(const char *key_id,
+                                                  int *fd_out);
+
 #ifdef __cplusplus
 }
 #endif
