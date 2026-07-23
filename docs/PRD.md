@@ -218,7 +218,7 @@ done. Treat this table as "what we're building toward," and Section 4 as
 | FR-SEC-02 | App permission system | P0 — done, both branches tested |
 | FR-SEC-03 | Disk encryption (LUKS) | P0 — real, verified (`luks.c` genuinely wired to `cryptsetup`; `luksOpen`+mount needs root, a WSL2 limitation not a code gap) |
 | FR-SEC-04 | File encryption (per-file) | P1 — not started |
-| FR-SEC-05 | Verified boot | P0 — not started |
+| FR-SEC-05 | Verified boot | P0 — in progress (dm-verity manifest fields + kernel config landed, commit 84c8df4; initrd veritysetup-open + boot verification pending) |
 | FR-SEC-06 | Privacy badges on apps | P1 — not started |
 | FR-SEC-07 | Security audit log | P1 — real (`wlt-permissions/audit.c` verified) |
 | FR-SEC-08 | Firewall config UI | P1 — not started (no Firewall PD yet either) |
@@ -230,8 +230,8 @@ done. Treat this table as "what we're building toward," and Section 4 as
 | FR-PKG-02 | Remove packages | P0 — done |
 | FR-PKG-03 | Update packages | P0 — not started |
 | FR-PKG-04 | Atomic updates | P0 — A/B design in progress |
-| FR-PKG-05 | Rollback | P1 — in progress |
-| FR-PKG-06 | Signed packages | P0 — real (`libwlt-update.a` builds with vendored libsodium; `nm`-confirmed Ed25519 symbols referenced and linked) |
+| FR-PKG-05 | Rollback | P0 — real (anti-rollback counter with HMAC integrity, commit 3d3a26e; signed manifest binds version+slot+counter, commit 7daed48) |
+| FR-PKG-06 | Signed packages | P0 — real (Ed25519 blob sig + signed manifest R5 + anti-rollback R2 + key chain/rotation R7; all compile-verified) |
 | FR-PKG-07 | Delta updates | P2 — not started |
 | FR-PKG-08 | Offline install from cache | P1 — not started |
 
@@ -342,7 +342,7 @@ Stated explicitly so it doesn't stay implicit:
 | glibc | Vendored for Tor + some components that need it | Low — stable, now vendored reproducibly |
 | Mesa | GPU drivers, needed for Section 7's rendering work | Low — stable |
 | Tor | Anonymity network | Low — stable |
-| libsodium | Ed25519 package signing (in progress) | Low — stable |
+| libsodium | Ed25519 signing + HMAC anti-rollback (real) | Low — stable |
 
 No external dependency for: bootloader, init system, compositor (custom, built on wlroots), package manager, security/sandboxing layer, Kairos AI integration layer.
 

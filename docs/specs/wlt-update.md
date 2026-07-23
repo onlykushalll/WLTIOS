@@ -1,200 +1,151 @@
-# Spec: WLT-Update (Atomic Update System)
+# WLT-Update — A/B Update System Specification
 
-> **Status:** Draft (ready for implementation)
-> **Phase:** 4 (Month 21)
-> **Dependencies:** WLT-Init, WLT-Crypto, WLT-Pkg
-> **ADR references:** None
+## Overview
 
-## Purpose
+WLT-Update is the atomic A/B update agent for WLTIOS. It fetches version
+manifests over a Tor SOCKS5 tunnel, downloads Ed25519-signed packages,
+verifies them, and drives the atomic install onto the inactive partition.
 
-WLT-Update handles OS updates using an A/B partition scheme. The system has two identical OS partitions. Updates download to the inactive partition while the OS runs on the active one. On reboot, the system switches to the updated partition. If boot fails, it auto-rolls back.
+This document specifies the security pipeline as implemented (commits
+3d3a26e, 7daed48, 84c8df4, db4f8d0, d791ef4).
 
-## How A/B Updates Work
+## Threat Model
 
-```
-Partition A: Current OS (active, running)
-Partition B: Update target (inactive)
+- **Network attacker**: controls the network, can MITM, replay, or serve
+  crafted packages. Defeated by: Tor transport (confidentiality), Ed25519
+  signature (integrity), anti-rollback counter (replay), signed manifest
+  (binding).
+- **Physical attacker with stolen disk**: has the disk image, wants to
+  decrypt. Defeated by: LUKS2 (see wlt-crypto spec), KeyVaultPD key
+  delivery (research-H).
+- **Runtime root attacker**: has root once, wants to persist a trojan.
+  Defeated by: dm-verity on the active slot (R6, in progress).
 
-1. System runs on Partition A
-2. WLT-Update downloads update to Partition B (while OS continues running)
-3. WLT-Update verifies signature
-4. On next reboot: boot from Partition B
-5. If Partition B boots successfully: mark B as active
-6. If Partition B fails to boot: auto-rollback to Partition A
-```
+## Security Pipeline (layers, in verify order)
 
-**Zero downtime. Zero risk of bricking.**
+### Layer 1: Ed25519 Blob Signature (existing)
 
-## Inputs
+`wlt_update_verify_file()` streams the package blob through
+`crypto_sign_update` and verifies the detached Ed25519 signature
+(`crypto_sign_final_verify`). Refuses any package whose signature doesn't
+validate. Streamed so 500 MB packages never need to fit in RAM.
 
-| Input | Source | Format |
-|-------|--------|--------|
-| Update check | Repository (via Tor) | Version manifest |
-| Update download | Repository (via Tor) | `.wlt-update.tar.zst` |
-| Signature | Repository | Ed25519 signature |
-| User command | CLI or WLT-Settings | `wltupdate check/install/rollback` |
-| Current partition | Bootloader | Active partition (A or B) |
+### Layer 2: Anti-Rollback Counter (R2, commit 3d3a26e)
 
-## Outputs
+`rollback.h`/`rollback.c` — a tamper-evident monotonic counter at
+`/var/lib/wlt/rollback.counter`:
 
-| Output | Destination | Format |
-|--------|-------------|--------|
-| Updated partition | Inactive partition (A or B) | New OS files |
-| Boot config | WLT-Boot config | Next boot target |
-| Status | WLT-Settings | Update available / installed / failed |
-| Rollback | Bootloader | Switch to previous partition |
+- Format: `<decimal-counter>\n<hex-HMAC-SHA256>`
+- HMAC key: build-time constant (clearly marked as needing KeyVaultPD
+  delivery for the full design — prevents filesystem-exploit tampering,
+  not root+binary extraction).
+- `wlt_rollback_load()`: verifies HMAC; returns ERR_IO on mismatch
+  (tamper-evident: refuse rather than silently resetting to 0).
+- `wlt_rollback_check(package_index)`: returns DOWNGRADE if
+  `package_index < stored`.
+- `wlt_rollback_bump(new_index)`: stores if `new_index > stored`
+  (monotonic, never decreases).
+- Atomic write: O_EXCL|O_NOFOLLOW|fsync file+dir|rename.
 
-## Dependencies
+Checked at `wlt_update_check()` (before download) AND re-checked at
+`wlt_update_install()` (defense-in-depth, after manifest verify).
 
-- **WLT-Boot** (bootloader reads partition config)
-- **WLT-Crypto** (signature verification)
-- **WLT-Pkg** (for package-level updates within a partition)
-- **Tor** (all downloads via Tor)
+### Layer 3: Signed Manifest (R5, commit 7daed48)
 
-## What Depends on This
+`wlt_update_verify_manifest()` + `wlt_update_compute_sha256()` in
+`verify.c` — binds the signature to `{version, rollback_index,
+target_slot, sha256(blob), verity_root_hash, verity_salt, verity_size,
+key_id}`:
 
-- System security (updates patch vulnerabilities)
-- User experience (seamless, no reboot interruptions)
+- The manifest is a small KV file alongside the package:
+  `version=`, `rollback_index=`, `target_slot=`, `sha256=`,
+  `verity_root_hash=`, `verity_salt=`, `verity_size=`, `key_id=`.
+- The manifest has its own detached Ed25519 signature (`.manifest.sig`).
+- `wlt_update_verify_manifest()`: verifies the manifest signature, parses
+  the fields.
+- `wlt_update_compute_sha256()`: streams the blob through
+  `crypto_generichash` (SHA-256), checks it matches the manifest.
+- At install time: check target_slot matches the inactive slot; re-check
+  rollback_index against the stored counter.
 
-## Error Handling
+If no `.manifest` exists, logs a warning and proceeds (backward-compatible).
 
-| Error | Action |
-|-------|--------|
-| Repository unreachable | Retry via Tor, then show "check failed" |
-| Signature invalid | REFUSE update, show security warning |
-| Download interrupted | Resume from where it left off |
-| Disk full | Abort, show "need more space" |
-| Boot fails after update | Auto-rollback to previous partition |
-| Rollback fails | Drop to recovery mode |
+### Layer 4: dm-Verity (R6, commit 84c8df4 — foundation)
 
-## Tests
+The active slot is mounted read-only with block-level integrity verification
+via dm-verity (per research-P-dm-verity):
 
-| Test | How |
-|------|-----|
-| Check for updates | Run `wltupdate check`, verify version info |
-| Download update | Run `wltupdate install`, verify download completes |
-| Boot to new partition | Reboot, verify new version active |
-| Rollback | Run `wltupdate rollback`, reboot, verify old version |
-| Auto-rollback | Corrupt new partition, reboot, verify auto-rollback |
-| Signature check | Tamper with update, verify refusal |
+- **Build time**: `veritysetup format` generates the Merkle tree over the
+  ext4 slot image. The root hash + salt + hash-area size go into the
+  signed manifest (R5 fields).
+- **Boot time** (initrd, not yet implemented): reads the root hash from
+  the signed manifest, runs `veritysetup open` before `switch_root`, mounts
+  the slot read-only. `/var` is a separate mount; `/etc` is an overlayfs
+  over the read-only verity `/etc`.
+- **Kernel config**: `CONFIG_DM_VERITY=y`, `DM_VERITY_FEC=y`,
+  `OVERLAY_FS=y`, `EXT4_FS=y` (added to `wlt-kernel.config`).
+- **On verity failure**: halt (auto-rollback needs the bootloader
+  handshake, research-I G8 — not yet implemented).
 
-## Security
+Status: manifest fields + parser + kernel config landed (84c8df4). The
+initrd `veritysetup open` sequence + build pipeline + boot verification
+are QEMU-gated follow-up.
 
-- **Signed updates** — Ed25519 signature required
-- **Tor download** — No IP leak during update check/download
-- **Verified boot** — WLT-Boot checks partition signature before booting
-- **No downgrades** — Rollback only to immediately-previous version (prevents downgrade attacks)
-- **Atomic** — Update either fully completes or fully rolls back
+### Layer 5: Key Chain + Rotation (R7, commits db4f8d0 + d791ef4)
 
-## Performance
+`keyring.h`/`keyring.c` — multiple Ed25519 signing keys with key-ids +
+validity windows, so a compromised key can be retired without reflashing:
 
-| Metric | Budget |
-|--------|--------|
-| Update check | < 5 seconds |
-| Update download (500MB) | < 10 minutes (Tor-dependent) |
-| Update install (copy to partition) | < 2 minutes |
-| Reboot to new partition | < 3 seconds (same as normal boot) |
-| Rollback | < 3 seconds (just boot other partition) |
+- Keyring file: `/etc/wlt/keys/update-keyring.bin` (binary, magic 'WLTK').
+- Each entry: `key_id` + 32-byte `pubkey` + `not_before` + `not_after`.
+- `wlt_keyring_load()` / `wlt_keyring_lookup(kr, key_id, now, out_pubkey)`.
+- `wlt_update_verify_manifest()`: after parsing, if `manifest.key_id` is
+  non-empty, calls `wlt_keyring_find(key_id)` and re-verifies the
+  signature with the keyring's pubkey. A manifest signed by a retired
+  key (not in the keyring, or expired) is refused.
 
-## File Structure
+## Install Flow (wlt_update_install)
 
-```
-src/userspace/wlt-update/
-├── Cargo.toml
-├── src/
-│   ├── main.rs            # CLI entry
-│   ├── check.rs           # Check for updates
-│   ├── download.rs        # Download via Tor
-│   ├── verify.rs          # Signature verification
-│   ├── install.rs         # Install to inactive partition
-│   ├── partition.rs       # Partition management (A/B)
-│   ├── boot_config.rs     # Update bootloader config
-│   ├── rollback.rs        # Rollback logic
-│   └── error.rs
-└── tests/
-```
+1. Acquire flock (WLT_UPDATE_ERR_BUSY on contention).
+2. Open the package ONCE (O_NOFOLLOW) — pass `/dev/fd/N` to verify + tar
+   (closes TOCTOU F1).
+3. Free-space check BEFORE format (C-H1/C-H2).
+4. Verify blob Ed25519 signature (Layer 1).
+5. If `.manifest` exists: verify manifest sig, check blob SHA-256 matches,
+   check target_slot, re-check rollback_index (Layers 2+3+5).
+6. Format + mount inactive slot.
+7. Extract package (tar via execve, not system()).
+8. Save boot config atomically (O_EXCL|O_NOFOLLOW|fsync file+dir|rename).
+9. Bump anti-rollback counter (Layer 2).
+10. Set pending_reboot; write status.
 
-## CLI Commands
+## Verified Boot Flow (R6, pending initrd)
 
-```bash
-wltupdate check              # Check for updates
-wltupdate install            # Download + install to inactive partition
-wltupdate status             # Show update status
-wltupdate rollback           # Rollback to previous partition
-wltupdate enable-auto        # Enable automatic updates
-wltupdate disable-auto       # Disable automatic updates
-wltupdate history            # Show update history
-```
+1. Bootloader selects active slot, passes to kernel.
+2. Initrd reads the signed manifest from `/boot/wlt-X.manifest`.
+3. Ed25519-verifies the manifest (reuses verify.c).
+4. Reads `verity_root_hash` + `verity_salt` + `verity_size`.
+5. `veritysetup open <data_dev> wlt-verity-X <root_hash> --hash-offset <off>`.
+6. `mount -o ro /dev/mapper/wlt-verity-X /mnt/real-root`.
+7. Mount `/var` (state partition); overlayfs `/etc` over the RO verity `/etc`.
+8. `exec switch_root /mnt/real-root /sbin/init`.
 
-## Partition Layout
+## File Locations
 
-```
-/dev/sda1 (ESP, unencrypted)     — Bootloader + boot config
-/dev/sda2 (LUKS2, Partition A)   — OS version 1 (active)
-/dev/sda3 (LUKS2, Partition B)   — OS version 2 (inactive / update target)
-/dev/sda4 (LUKS2, User data)     — User files (shared between A and B)
-```
+- `/var/lib/wlt/rollback.counter` — anti-rollback counter (R2)
+- `/var/lib/wlt/update.status` — update status (pending_version, rollback_index)
+- `/boot/wltios.conf` — boot config (A/B slot selection)
+- `/etc/wlt/keys/update-pubkey.bin` — single Ed25519 pubkey (legacy)
+- `/etc/wlt/keys/update-keyring.bin` — keyring with rotation (R7)
+- `/etc/wlt/keys/update-pubkey.bin` — fallback when no keyring/key_id
 
-## Boot Config (`/boot/wltios.conf`)
+## Open Items (honestly deferred)
 
-```ini
-[wlt-boot]
-version = 1
-timeout = 3
-default = A                # Active partition (A or B)
-rollback_on_fail = yes     # Auto-rollback if boot fails
-
-[A]
-kernel = /boot/sel4-a.bin
-linux = /boot/linux-a.img
-signature = /boot/sel4-a.sig
-verify = yes
-last_boot_success = 2026-06-21T10:00:00Z
-
-[B]
-kernel = /boot/sel4-b.bin
-linux = /boot/linux-b.img
-signature = /boot/sel4-b.sig
-verify = yes
-last_boot_success = 2026-06-20T10:00:00Z
-```
-
-## Update Flow
-
-```
-1. wltupdate check
-   → Connect to repository via Tor
-   → Fetch latest version manifest
-   → Compare with current version
-   → Show "update available" or "up to date"
-
-2. wltupdate install
-   → Download update package via Tor
-   → Verify signature
-   → Identify inactive partition (B if running on A)
-   → Format inactive partition
-   → Extract update to inactive partition
-   → Update boot config: default = B
-   → Mark "pending reboot"
-   → User reboots
-
-3. On reboot
-   → WLT-Boot reads config, boots from B
-   → If B boots successfully:
-      → WLT-Boot updates last_boot_success for B
-      → OS runs on B
-      → A becomes inactive (rollback target)
-   → If B fails to boot (3 attempts):
-      → WLT-Boot auto-rolls back to A
-      → Marks B as failed
-      → User sees "update failed, rolled back" notification
-
-4. wltupdate rollback
-   → Swap boot config: default = A (or B, whichever is previous)
-   → User reboots
-   → System boots from previous partition
-```
-
----
-
-**Spec version:** 1.0
+- **R6 initrd**: `veritysetup open` sequence + build pipeline + QEMU boot
+  verification (needs kernel rebuild + boot).
+- **R6 auto-rollback on verity failure**: needs bootloader handshake (G8).
+- **KeyVaultPD bridge daemon**: the `wlt_keyvault_get_volume_key_fd()`
+  client is done (abe3d84); the bridge daemon that reads from
+  `/dev/virtio-port/wltkv` needs seL4 KeyVaultPD + virtio-console.
+- **dm-verity FEC + kernel-side root-hash sig** (`DM_VERITY_VERIFY_ROOTHASH_SIG`):
+  ideal hardening (research-P §4).
