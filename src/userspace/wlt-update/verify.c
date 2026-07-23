@@ -18,6 +18,7 @@
  */
 
 #include "update.h"
+#include "keyring.h"  /* R7: key chain + rotation */
 
 #include <stdlib.h>
 #include <string.h>
@@ -265,6 +266,8 @@ parse_manifest_file(FILE *fp, wlt_UpdateManifest *out)
             wlt_strlcpy(out->verity_salt, val, sizeof(out->verity_salt));
         else if (strcmp(key, "verity_size") == 0)
             out->verity_size = strtoull(val, NULL, 10);
+        else if (strcmp(key, "key_id") == 0)
+            wlt_strlcpy(out->key_id, val, sizeof(out->key_id));
     }
     if (out->version[0] == '\0' || out->sha256_hex[0] == '\0')
         return WLT_UPDATE_ERR_INVALID_ARG;

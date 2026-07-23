@@ -37,7 +37,8 @@ SRCS = update.c \
        partition.c \
        verify.c \
        config.c \
-       rollback.c
+       rollback.c \
+       keyring.c
 
 HEADERS = include/update.h \
           include/partition.h

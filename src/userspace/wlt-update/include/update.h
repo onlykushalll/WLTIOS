@@ -63,6 +63,7 @@ typedef enum {
 #define WLT_UPDATE_MAX_PATH           256
 #define WLT_UPDATE_MAX_LINE           512
 #define WLT_UPDATE_MAX_HISTORY        16
+#define WLT_KEYRING_MAX_KEY_ID         32  /* R7: max signing key_id length */
 #define WLT_UPDATE_MAX_HOST           128
 
 #define WLT_UPDATE_CHECK_TIMEOUT_SEC    5   /* spec: check < 5 s           */
@@ -190,6 +191,11 @@ typedef struct {
     char     verity_root_hash[65]; /* 64 hex chars + NUL, or empty if none */
     char     verity_salt[65];      /* 64 hex chars + NUL */
     uint64_t verity_size;         /* hash area size in bytes (for --hash-offset) */
+    /* Key chain (research-I R7): the key_id of the signing key used.
+     * When non-empty, verify.c looks up the pubkey in the keyring
+     * (/etc/wlt/keys/update-keyring.bin) instead of the single fixed
+     * key. Allows key rotation/revocation without reflashing. */
+    char     key_id[WLT_KEYRING_MAX_KEY_ID + 1];
 } wlt_UpdateManifest;
 
 /* Verify a signed manifest file. Loads + verifies the Ed25519 signature,
