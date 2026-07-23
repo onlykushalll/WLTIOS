@@ -41,7 +41,15 @@ static inline CURL *curl_easy_init(void) { return (CURL *)1; }
 static inline void curl_easy_cleanup(CURL *c) { (void)c; }
 static inline void curl_easy_reset(CURL *c) { (void)c; }
 static inline CURLcode curl_easy_setopt(CURL *c, CURLoption o, ...) { (void)c; (void)o; return CURLE_OK; }
-static inline CURLcode curl_easy_perform(CURL *c) { (void)c; return CURLE_OK; }
+static inline CURLcode curl_easy_perform(CURL *c) {
+    (void)c;
+    /* FAIL-CLOSED: the cloud/STT/TTS paths are stubbed out. Return a
+     * non-OK code so ai.c's error handling fires honestly with
+     * 'curl error: stub' rather than silently pretending to succeed
+     * and then reading an uninitialized HTTP code. When real libcurl
+     is linked (-lcurl), these stubs are not used and real calls run. */
+    return 1; /* non-CURLE_OK */
+}
 static inline void curl_global_init(long f) { (void)f; }
 static inline void curl_global_cleanup(void) {}
 static inline struct curl_slist *curl_slist_append(struct curl_slist *l, const char *s) { (void)s; return l; }
