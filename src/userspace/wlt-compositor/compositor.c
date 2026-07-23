@@ -413,7 +413,7 @@ static void pointer_handle_button(struct wl_listener *listener, void *data) {
 
     wlr_seat_pointer_notify_button(g_seat, event->time_msec, event->button, event->state);
 
-    if (event->state == WLR_BUTTON_PRESSED) {
+    if ((enum wlr_button_state)event->state == WLR_BUTTON_PRESSED) {
         /* Click-to-focus */
         wlt_view_t *view = view_at(g_cursor->x, g_cursor->y);
         if (view) {
@@ -441,7 +441,7 @@ static void pointer_handle_button(struct wl_listener *listener, void *data) {
                 }
             }
         }
-    } else if (event->state == WLR_BUTTON_RELEASED) {
+    } else if ((enum wlr_button_state)event->state == WLR_BUTTON_RELEASED) {
         if (g_dragging) {
             fprintf(stderr, "[compositor] Drag ended\n");
             g_dragging = false;
