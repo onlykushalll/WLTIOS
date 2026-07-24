@@ -186,7 +186,43 @@ grep -q ControlPort $ROOTFS/etc/tor/torrc 2>/dev/null || echo "ControlPort 9051"
 grep -q CookieAuthentication $ROOTFS/etc/tor/torrc 2>/dev/null || echo "CookieAuthentication 1" >> $ROOTFS/etc/tor/torrc
 echo "Tor control port configured"
 
-echo "=== STEP 12: repack initramfs ==="
+echo "=== STEP 11.5: Install Guardian (defender) assets ==="
+DEFENDER=$REPO/src/userspace/wlt-defender
+GUARD_DIR=$ROOTFS/etc/wlt/guardian
+mkdir -p $GUARD_DIR/bpf $GUARD_DIR/sigs $GUARD_DIR/lib
+# Guardian daemon binary (already built in build/guardian)
+if [ -f "$DEFENDER/build/guardian" ]; then
+    cp "$DEFENDER/build/guardian" $ROOTFS/usr/sbin/wlt-guardian && chmod 755 $ROOTFS/usr/sbin/wlt-guardian
+    echo "guardian daemon OK"
+else
+    echo "WARNING: guardian binary not built (run 'make guardian' in wlt-defender)"
+fi
+# BPF programs (compiled .bpf.o files)
+if [ -d "$DEFENDER/build/bpf" ]; then
+    cp "$DEFENDER"/build/bpf/*.bpf.o $GUARD_DIR/bpf/ 2>/dev/null || true
+    echo "guardian BPF OK"
+else
+    echo "WARNING: BPF not compiled (run 'make bpf' in wlt-defender)"
+fi
+# YARA signatures (compiled .yarc)
+if [ -f "$DEFENDER/signatures/guardian.yarc" ]; then
+    cp "$DEFENDER/signatures/guardian.yarc" $GUARD_DIR/sigs/
+    echo "guardian sigs OK"
+fi
+# Anomaly ML model (iforest + hash for tamper-evidence)
+if [ -f "$DEFENDER/ml/anomaly.iforest" ]; then
+    cp "$DEFENDER/ml/anomaly.iforest" $GUARD_DIR/
+    cp "$DEFENDER/ml/anomaly.iforest.sha256" $GUARD_DIR/
+    echo "guardian ML model OK"
+else
+    echo "WARNING: anomaly.iforest not found (run 'make ml' in wlt-defender)"
+fi
+# Guardian config + policy
+cp "$DEFENDER/wlt-integration/guardian.conf" $GUARD_DIR/ 2>/dev/null || true
+cp "$DEFENDER/rules/guardian.policy" $GUARD_DIR/ 2>/dev/null || true
+echo "=== Guardian assets installed ==="
+
+echo "=== STEP 12: repack initramfs ===" 
 fakeroot bash -c '
 cd ~/wltios-build/wltios-rootfs64
 rm -f dev/console dev/null dev/zero dev/mem dev/urandom dev/tty dev/ttyS0 dev/fb0

@@ -199,7 +199,15 @@ g_anomaly_engine_t *g_anomaly_init(const char *model_path, const char *py_bin) {
     /* Phase 2.2: try to load native C iforest (eliminates Python subprocess). */
     {
         char ifo_path[G_PATH_MAX];
-        snprintf(ifo_path, sizeof(ifo_path), "%s.iforest", ae->model_path);
+        /* The model_path may already end in .iforest (e.g. the config sets
+         * ml_model_path = /etc/wlt/guardian/anomaly.iforest). Try it directly
+         * first; only append .iforest if it doesn't already. */
+        size_t mplen = strlen(ae->model_path);
+        if (mplen >= 9 && strcmp(ae->model_path + mplen - 9, ".iforest") == 0) {
+            g_strlcpy(ifo_path, ae->model_path, sizeof(ifo_path));
+        } else {
+            snprintf(ifo_path, sizeof(ifo_path), "%s.iforest", ae->model_path);
+        }
         if (access(ifo_path, R_OK) != 0) {
             g_strlcpy(ifo_path, "ml/anomaly.iforest", sizeof(ifo_path));
         }
