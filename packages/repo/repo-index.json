@@ -1,0 +1,27 @@
+{
+  "repo": "WLTIOS Package Repository",
+  "version": "1",
+  "packages": [
+    {
+      "name": "hello-wlt",
+      "version": "1.0.0",
+      "file": "hello-wlt-1.0.0-wlt.tar.gz",
+      "sha256": "dd8f2ae8bee3424e406301d3e6ec703de00dcb8fe651a2a86aa3434e6f6a18f9",
+      "size": 353689
+    },
+    {
+      "name": "wlt-calc",
+      "version": "1.0.0",
+      "file": "wlt-calc-1.0.0-wlt.tar.gz",
+      "sha256": "4aabadab255262c33038ee88579dd25447ac6ffcf4c1d7d3da41515042e26335",
+      "size": 368118
+    },
+    {
+      "name": "wlt-status",
+      "version": "1.0.0",
+      "file": "wlt-status-1.0.0-wlt.tar.gz",
+      "sha256": "d424b827e6470193bf8b22384e180405fa938fda3591c548b89efb5288647422",
+      "size": 422140
+    }
+  ]
+}
