@@ -1,0 +1,23 @@
+/*
+ * BootVerifierPD.camkes — CAmkES component declaration for Boot Verifier PD
+ *
+ * A bare seL4 protection domain (NOT a Linux guest VM) that verifies
+ * system integrity at boot + runtime. Like KeyVaultPD, it runs in its
+ * own seL4 PD with no filesystem/sockets — just hashing + comparison.
+ *
+ * Design per docs/specs/boot-verifier-pd.md:
+ *   - At boot: verifies Linux kernel signature, takes hash snapshots
+ *   - At runtime: re-hashes critical files, detects tampering/rootkits
+ *   - On mismatch: triggers kill switch + alerts via IPC
+ *
+ * IPC pattern: same as KeyVaultPD (seL4SharedDataWithCaps + seL4Notification)
+ * vm0 sends verification requests; BootVerifierPD responds with OK/TAMPERED.
+ */
+component BootVerifierPD {
+    control;
+    consumes Ready verify_request;
+    emits Done verify_done;
+    dataport Buf(4096) request_dp;    /* vm0 writes: file path + expected hash */
+    dataport Buf(4096) response_dp;  /* BootVerifierPD writes: OK/TAMPERED */
+    maybe uses PutChar putchar;
+}
