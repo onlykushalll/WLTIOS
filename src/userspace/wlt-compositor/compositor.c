@@ -447,6 +447,28 @@ static void pointer_handle_button(struct wl_listener *listener, void *data) {
         if (g_dragging) {
             fprintf(stderr, "[compositor] Drag ended\n");
             g_dragging = false;
+
+            /* Window snapping (FR-GUI-04): if cursor is near a screen edge
+             * when the drag ends, snap the window to that half. Threshold: 20px. */
+            if (g_focused_view) {
+                wlt_view_t *view = g_focused_view;
+                int snap = 20;
+                int cx = (int)g_cursor->x, cy = (int)g_cursor->y;
+                int hw = g_output_w / 2;
+                if (cx < snap) {
+                    view->x=0; view->y=0; view->w=hw; view->h=g_output_h-32;
+                    wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+                    fprintf(stderr, "[compositor] Snap left\n");
+                } else if (cx > g_output_w-snap) {
+                    view->x=hw; view->y=0; view->w=hw; view->h=g_output_h-32;
+                    wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+                    fprintf(stderr, "[compositor] Snap right\n");
+                } else if (cy < snap) {
+                    view->x=0; view->y=0; view->w=g_output_w; view->h=g_output_h-32;
+                    wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+                    fprintf(stderr, "[compositor] Snap top (maximize)\n");
+                }
+            }
         }
         if (g_resizing) {
             fprintf(stderr, "[compositor] Resize ended (final %dx%d)\n",
