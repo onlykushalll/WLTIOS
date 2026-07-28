@@ -16,6 +16,9 @@
 #include "console.h"
 #include <string.h>
 
+/* Monocypher: single-file Ed25519 implementation (vendored at packages/monocypher/) */
+#include "monocypher.h"
+
 /* ─── SHA-256 Constants ──────────────────────────────── */
 
 static const uint32_t k[64] = {
@@ -248,16 +251,8 @@ wlt_verify_ed25519(const uint8_t *data, size_t data_size,
                     const uint8_t sig[64],
                     const uint8_t pubkey[32])
 {
-    /* SECURITY FIX: this previously returned WLT_BOOT_OK unconditionally —
-     * a fail-open bug. If anything called wlt_verify_ed25519() expecting
-     * genuine verification, it would accept ANY input as valid.
-     *
-     * Now FAILS CLOSED: returns WLT_BOOT_ERR_SIGNATURE until a real
-     * Ed25519 implementation (monocypher — single-file, no deps, easy to
-     * vendor for UEFI) is integrated. This means:
-     *   - If the boot config requests Ed25519 verification, boot REFUSES
-     *   - If the boot config uses SHA-256 hash comparison (current default),
-     *     this function is not called + boot proceeds via wlt_verify_kernel
+    /* REAL Ed25519 verification via monocypher (vendored at packages/monocypher/).
+     * monocypher's crypto_eddsa_check returns 0 on valid signature, -1 on invalid.
      *
      * TRUST BOUNDARY: the boot signing key is SEPARATE from the package
      * signing key (wlt-update). Rationale: if the package key is compromised
@@ -266,25 +261,36 @@ wlt_verify_ed25519(const uint8_t *data, size_t data_size,
      *   boot key = protects against evil-maid (physical access)
      *   package key = protects against MITM (malicious updates)
      *
-     * The boot pubkey (32 bytes Ed25519) should live at:
+     * The boot pubkey (32 bytes Ed25519) lives at:
      *   /boot/keys/boot-pubkey.bin (on the ESP)
      * NOT the same file as /etc/wlt/keys/update-pubkey.bin (package key).
      *
-     * Current wlt_verify_kernel() uses raw SHA-256 hash comparison — this
-     * provides ZERO protection against deliberate tampering (an attacker
-     * can recompute a matching hash). It only catches accidental
-     * corruption. Real verified boot requires Ed25519 (asymmetric —
-     * the attacker cannot forge a signature without the private key).
-     * Integrating monocypher is the tracked follow-up for real verified boot.
-     */
-    (void)data;
-    (void)data_size;
-    (void)sig;
-    (void)pubkey;
+     * FAIL-CLOSED: if the key is all-zeros (not configured), REFUSE. */
+    if (data == NULL || sig == NULL || pubkey == NULL) {
+        wlt_console_error("Ed25519 verify: NULL argument");
+        return WLT_BOOT_ERR_INVALID_ARG;
+    }
 
-    wlt_console_error("Ed25519 verification not implemented — REFUSING (fail-closed)");
-    wlt_console_error("Use SHA-256 hash comparison (wlt_verify_kernel) or");
-    wlt_console_error("integrate monocypher for real Ed25519 verified boot.");
-    return WLT_BOOT_ERR_SIGNATURE;
+    /* Check if the key is all zeros (not configured) — fail-closed */
+    bool key_configured = false;
+    for (int i = 0; i < 32; i++) {
+        if (pubkey[i] != 0) { key_configured = true; break; }
+    }
+    if (!key_configured) {
+        wlt_console_error("Ed25519 verify: boot key not configured (all zeros) — REFUSING");
+        return WLT_BOOT_ERR_SIGNATURE;
+    }
+
+    /* Real Ed25519 verification via monocypher */
+    int rc = crypto_eddsa_check(sig, pubkey, data, data_size);
+    if (rc != 0) {
+        wlt_console_error("Ed25519 verify: signature INVALID (tampered?)");
+        return WLT_BOOT_ERR_SIGNATURE;
+    }
+
+    wlt_console_info("Ed25519 verify: signature VALID");
+    return WLT_BOOT_OK;
 }
+
+
 
