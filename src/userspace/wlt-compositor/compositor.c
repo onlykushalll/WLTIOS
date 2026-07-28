@@ -422,6 +422,32 @@ static void pointer_handle_button(struct wl_listener *listener, void *data) {
             focus_view(view);
 
             uint32_t mods = wlr_keyboard_get_modifiers(wlr_seat_get_keyboard(g_seat));
+
+            /* Plain right-click (no modifier): context menu (FR-GUI-11).
+             * Cycles through: maximize → close → restore. Real menu rendering
+             * would use a layer surface; for now the action is direct. */
+            if (!(mods & WLR_MODIFIER_ALT) && event->button == BTN_RIGHT) {
+                static int ctx_state = 0;
+                ctx_state = (ctx_state + 1) % 3;
+                if (ctx_state == 0) {
+                    /* Maximize */
+                    view->x = 0; view->y = 0;
+                    view->w = g_output_w; view->h = g_output_h - 32;
+                    wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+                    fprintf(stderr, "[compositor] Context menu: MAXIMIZE\n");
+                } else if (ctx_state == 1) {
+                    /* Restore (half-screen) */
+                    view->x = 100; view->y = 100;
+                    view->w = g_output_w / 2; view->h = (g_output_h - 32) / 2;
+                    wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+                    fprintf(stderr, "[compositor] Context menu: RESTORE\n");
+                } else {
+                    /* Minimize (hide) */
+                    wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+                    fprintf(stderr, "[compositor] Context menu: MINIMIZE\n");
+                }
+            }
+
             if (mods & WLR_MODIFIER_ALT) {
                 if (event->button == BTN_LEFT) {
                     /* Alt+LeftClick: drag-to-move */
