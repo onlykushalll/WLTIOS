@@ -1,618 +1,164 @@
-# WLTIOS — Architecture Document
+# WLTIOS — Architecture (Consolidated Reference)
 
-> **Pronounced:** L-TOS
-> **Etymology:** **W**indows + **L**inux + **T**ails + **I**nspired **OS**
-> **Version:** 1.0 (Architecture Blueprint)
-> **Date:** 2026-06-20
-> **Status:** Planning → Implementation Ready
-
----
-
-## 1. Executive Summary
-
-WLTIOS is a general-purpose desktop operating system that combines:
-
-- **Windows-inspired UX** — familiar, flexible, user-friendly interface
-- **Linux-powered foundation** — proven kernel, unmatched hardware support, Unix philosophy
-- **Tails-grade anonymity** — Tor everywhere, amnesic by default, MAC spoofing, kill switch
-- **seL4 verified isolation** — mathematical security guarantees for critical services
-- **AI-native integration** — built-in AI assistant at the OS level (not an app)
-
-**No existing OS combines all five.** This is WLTIOS's unique value proposition.
+> **Supersedes:** the original `docs/ARCHITECTURE.md` (2026-06-20 blueprint),
+> `docs/MODULE_MAP.md`, `docs/FILETREE.md`, and the architecture sections of
+> `docs/context/MASTER_CONTEXT.md` / `PROJECT_CONTEXT_SUMMARY.md`. Those are
+> archived under `_ARCHIVED_2026-07-29` suffixes in their original folders.
+> This document reflects the **actual current architecture**, verified
+> against source and `git log`/`git show` on 2026-07-29, not the original
+> aspirational blueprint.
+> **Status:** Living document — re-verify against the repo before trusting
+> any status line here past its date.
 
 ---
 
-## 2. Design Principles
+## 1. What WLTIOS actually is today
 
-| # | Principle | What It Means |
-|---|-----------|--------------|
-| 1 | **Everything is a file** | All config, state, and hardware accessible as text files (Unix philosophy) |
-| 2 | **Secure by default** | Tor on, telemetry off, disk encrypted, no root login |
-| 3 | **Minimal footprint** | <256MB RAM idle, <3s boot, <2GB disk install |
-| 4 | **Formal isolation** | Critical services run on seL4, not Linux — mathematically separated |
-| 5 | **AI-native** | AI assistant is a first-class OS citizen, not a bolted-on app |
-| 6 | **No telemetry, ever** | Zero data leaves the device unless the user explicitly sends it |
-| 7 | **Amnesic option** | Can run entirely in RAM, leaving no trace on hardware |
-| 8 | **Familiar but better** | UX concepts people know (taskbar, windows, settings) but improved |
-| 9 | **Atomic everything** | Updates, installs, and rollbacks are atomic (Nix-style) |
-| 10 | **Swappable identity** | Multiple personas/identities for different activities |
+WLTIOS is not one unified seL4-based system yet. Per **ADR-10** (2026-07-19,
+evidence gathered directly from `CMakeCache.txt` / `app_settings.cmake` /
+`file` on kernel images — not inference), the project currently has **three
+parallel, unreconciled build tracks** sharing one seL4 source checkout:
+
+| Track | What it is | Arch | Status |
+|---|---|---|---|
+| **Track 1 — seL4 multi-PD (32-bit)** | KeyVaultPD + TorPD as CAmkES components/VMs | `ia32` | KeyVaultPD ping/pong verified 2026-07-12. TorPD two-VM boot fixed 2026-07-25 (commit `9897506`, heap_size bug) — build reaches Buildroot login. The vm0-vm1 IPC round-trip proof from ADR-09 was not independently re-confirmed in this consolidation pass — re-verify serial log before relying on it. |
+| **Track 2 — Desktop/compositor** | Standalone 64-bit Linux kernel, **no seL4 in the boot path** | `x86_64` | This is where nearly all GUI/AI/app work happens (compositor, shell, Kairos, wlt-pkg, etc.) |
+| **Track 3 — 64-bit seL4** | `build-minimal-64`, bare VM only | `x86_64` | Proves 64-bit seL4 VMs work in this repo; not yet carrying KeyVaultPD/TorPD |
+
+**Practical implication:** when this document or others say "the compositor
+runs," that is Track 2 (Linux kernel booted directly in QEMU) — the seL4
+security architecture (Tor isolation, Key Vault, Firewall PD) is **not**
+protecting the desktop session today. Track 1 is a real, separately-verified
+proof that seL4 multi-PD isolation works technically; unifying Track 1 and
+Track 2 so the desktop actually runs under seL4 is future work (ADR-10 Step 3,
+unscheduled as of this writing).
 
 ---
 
-## 3. High-Level Architecture
+## 2. Layered design (as originally specified, status per layer below)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        WLTIOS ARCHITECTURE                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │              USER APPLICATIONS LAYER                      │  │
-│  │  Browser │ Editor │ Media Player │ Terminal │ File Manager │  │
-│  │  AI Assistant │ Settings │ Task Manager │ Package Manager  │  │
-│  └────────────────────────┬─────────────────────────────────┘  │
-│                           │                                      │
-│  ┌────────────────────────▼─────────────────────────────────┐  │
-│  │              WLTIOS USERSPACE (custom, ~3M lines)         │  │
-│  │                                                           │  │
-│  │  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐   │  │
-│  │  │ GUI Layer   │  │ System Layer │  │ Security     │   │  │
-│  │  │             │  │              │  │ Layer        │   │  │
-│  │  │ • Compositor│  │ • Init       │  │ • Sandbox    │   │  │
-│  │  │ • Widget kit│  │ • Shell      │  │ • Permissions│   │  │
-│  │  │ • Window mgmt│ │ • Package mgr│  │ • Crypto     │   │  │
-│  │  │ • Taskbar   │  │ • Service mgr│  │ • Tor mgr    │   │  │
-│  │  │ • Launcher  │  │ • Network mgr│  │ • Firewall   │   │  │
-│  │  └─────────────┘  └──────────────┘  └──────────────┘   │  │
-│  └────────────────────────┬─────────────────────────────────┘  │
-│                           │                                      │
-│  ┌────────────────────────▼─────────────────────────────────┐  │
-│  │              LINUX KERNEL (reuse, ~30M lines)             │  │
-│  │  Runs as a GUEST on seL4 (paravirtualized via virtio)    │  │
-│  │                                                           │  │
-│  │  • Hardware drivers (GPU, WiFi, USB, NVMe, audio)        │  │
-│  │  • Filesystem drivers (ext4, btrfs, LUKS)                │  │
-│  │  • Network stack (TCP/IP, but routed through seL4/Tor)   │  │
-│  │  • Process scheduler (CFS)                               │  │
-│  │  • cgroups + namespaces (for app sandboxing)             │  │
-│  └────────────────────────┬─────────────────────────────────┘  │
-│                           │                                      │
-│  ┌────────────────────────▼─────────────────────────────────┐  │
-│  │              seL4 MICROKERNEL (verified, ~10K lines)      │  │
-│  │  Mathematically proven: no bugs, no vulnerabilities     │  │
-│  │                                                           │  │
-│  │  Runs CRITICAL services in isolated partitions:          │  │
-│  │  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐   │  │
-│  │  │ Tor Daemon  │  │ Crypto Keys  │  │ Boot Verifier│   │  │
-│  │  │ (network    │  │ (encryption  │  │ (checks sig  │   │  │
-│  │  │  isolation) │  │  keys, certs)│  │  before boot)│   │  │
-│  │  └─────────────┘  └──────────────┘  └──────────────┘   │  │
-│  │  ┌─────────────┐  ┌──────────────┐                      │  │
-│  │  │ Firewall    │  │ Auth Service │                      │  │
-│  │  │ (packet     │  │ (login,      │                      │  │
-│  │  │  filtering) │  │  biometric)  │                      │  │
-│  │  └─────────────┘  └──────────────┘                      │  │
-│  └────────────────────────┬─────────────────────────────────┘  │
-│                           │                                      │
-│  ┌────────────────────────▼─────────────────────────────────┐  │
-│  │              BOOTLOADER (custom, ~5K lines)               │  │
-│  │  UEFI bootloader with verified boot                      │  │
-│  │  Checks seL4 signature → checks Linux signature → boots  │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                           │                                      │
-│  ┌────────────────────────▼─────────────────────────────────┐  │
-│  │              HARDWARE (CPU, RAM, GPU, NIC, storage)       │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+USER APPLICATIONS  (terminal, file manager, settings, editor, task mgr, ...)
+        |
+WLTIOS USERSPACE (custom C, tens of thousands of real lines per the
+                   orphaned-code + A/B audits, not the ~3M line estimate
+                   in the original blueprint)
+        |
+LINUX KERNEL  (reused; runs as a guest VM under seL4 in Track 1, runs
+               directly under QEMU with no seL4 in Track 2 - see above)
+        |
+seL4 MICROKERNEL  (verified; Track 1/3 only - not in Track 2's boot path)
+        |
+BOOTLOADER (WLT-Boot, custom UEFI loader, real Ed25519 verified boot
+            as of commit c169cb2, 2026-07-28)
 ```
+
+The original blueprint's line-count table (~3M custom / ~30M reused) was a
+target estimate, not a measurement, and should not be quoted as current fact.
+The **Orphaned Code Audit** (2026-07-16, corrected 2026-07-18) is the most
+reliable real measurement available for the modules it covered: `wlt-ai`
+5,114 lines (19 files), `wlt-permissions` 1,246 lines (clean, zero stubs),
+`wlt-tor-mgr` 2,060 lines (real Tor control-port client), `wlt-pkg` 827 lines
+at time of audit (heavily stubbed then; substantially reworked since — see
+the package-management doc), `wlt-update` 1,525 lines (later re-audited at
+2,088 lines including headers, found NOT a skeleton).
 
 ---
 
-## 4. Component Specifications
+## 3. seL4 layer (Track 1 / 3)
 
-### 4.1 Bootloader (WLT-Boot)
+### Protection Domains (PDs) - status
 
-| Aspect | Specification |
-|--------|--------------|
-| **Type** | UEFI bootloader (custom, multiboot2-compliant) |
-| **Language** | Assembly (boot stub) + C (main logic) |
-| **Lines** | ~5,000 |
-| **Responsibilities** | UEFI handshake → verify seL4 signature → load seL4 into memory → transfer control |
-| **Verified boot** | Checks SHA-256 signatures of seL4 + Linux kernel before booting |
-| **Fallback** | If signature fails, drops to recovery shell |
-| **Boot time** | <500ms |
+| PD | Purpose | Status |
+|---|---|---|
+| **Key Vault PD** | Holds encryption keys, does crypto ops, keys never leave the partition | Ping/pong across the seL4 kernel boundary verified real, 2026-07-12 (raw serial log: `[key-vault-pd] ping received, pong sent`, IRQ counter incremented). An FD-based key-delivery bridge client (`abe3d84`, 2026-07-23) exists for `wlt-update`'s dm-verity work, but the bridge daemon reading from `/dev/virtio-port/wltkv` still needs seL4 KeyVaultPD + virtio-console wiring (documented as open work in the update spec). |
+| **TorPD** | Isolate the Tor daemon in a second Linux guest VM (ADR-03, ADR-09) | Scaffold + two-VM boot fixed 2026-07-25 (`9897506`) after a memory-collision bug (heap_size 500x too large, root-caused via the `optiplex9020.camkes` reference example). Build reaches Buildroot login. The SOCKS-proxy relay (Phase 2 of the TorPD spec) and the vm0-vm1 IPC proof are not confirmed real in this pass - re-verify before treating TorPD as functionally isolating Tor traffic. |
+| **Boot Verifier PD** | Runtime integrity re-check of kernel/config hashes | Scaffold added 2026-07-26 (`eddb02d`, modeled on KeyVaultPD's bare-component pattern), with a real SHA-256 comparison (not a stub-OK) landed 2026-07-27 (`16ef5b9`). Not yet wired to trigger rollback/kill-switch on mismatch - treat as a working comparison primitive, not the full spec'd runtime-tamper-detection loop. |
+| **Firewall PD** | Enforce Tor-only routing + kill switch at the seL4 level | Not started. The kill switch that exists today (see networking doc) is a route-deletion fallback implemented in Linux userspace, not seL4 enforcement. |
 
-### 4.2 seL4 Microkernel Layer
+### Why the 32-bit/64-bit split exists
 
-| Aspect | Specification |
-|--------|--------------|
-| **Base** | seL4 (open source, formally verified) |
-| **Lines** | ~10,000 (seL4 core) + ~50,000 (our partitions) |
-| **Verification** | Mathematically proven: no buffer overflows, no null derefs, no deadlocks |
-| **Partitions** | 5 isolated service partitions (see below) |
-| **Communication** | Message-passing (IPC) between partitions — no shared memory |
+seL4's 32-bit (`ia32`) VMM uses software LAPIC emulation, which WSL2's nested
+KVM supports; the 64-bit VMM needs hardware APIC virtualization
+(`vmx-apicv-xapic`), which WSL2 doesn't expose. This is why development
+happened on 32-bit even though a 64-bit seL4 build exists and boots
+(`build-minimal-64`, a plain VM with no PDs). Full detail in
+`docs/adr/10-architecture-fork.md` (kept, not archived - still accurate).
 
-#### seL4 Partitions (Critical Services)
+### seL4 -> NIC passthrough (Track 1)
 
-| Partition | Purpose | Can Linux Touch It? |
-|-----------|---------|---------------------|
-| **Tor Gateway** | Runs Tor daemon. All network traffic MUST go through here. | ❌ No — isolated |
-| **Key Vault** | Stores encryption keys, certificates, passwords. Encrypts/decrypts on request. | ❌ No — isolated |
-| **Boot Verifier** | Re-verifies kernel integrity at runtime. Detects rootkits. | ❌ No — isolated |
-| **Firewall** | Packet filtering. Enforces "Tor-only" rule. Kill switch. | ❌ No — isolated |
-| **Auth Service** | Login, biometric verification, permission grants. | ❌ No — isolated |
-
-**Key insight:** Even if Linux is fully compromised (rootkit installed), these 5 services remain secure. The attacker cannot:
-- Disable Tor (it's in a separate partition)
-- Steal encryption keys (they're in a separate partition)
-- Disable the firewall (it's in a separate partition)
-- Fake authentication (it's in a separate partition)
-
-### 4.3 Linux Kernel Layer
-
-| Aspect | Specification |
-|--------|--------------|
-| **Base** | Linux LTS (long-term support, currently 6.x) |
-| **Lines** | ~30M (kernel + drivers — reused, not written by us) |
-| **Role** | Runs as a GUEST on seL4 (paravirtualized) |
-| **Drivers** | GPU (NVIDIA/AMD/Intel), WiFi, USB, NVMe, audio, Bluetooth |
-| **Customizations** | Minimal config, remove unnecessary modules, enable ZRAM |
-| **Network** | All traffic routed to seL4 Tor partition (not direct to NIC) |
-
-**Why paravirtualized Linux on seL4:**
-- We get Linux's 15M+ lines of hardware drivers for free
-- seL4 isolates Linux — if Linux is hacked, critical services are safe
-- This is the Qubes model, but with seL4 instead of Xen (more secure)
-
-### 4.4 WLTIOS Userspace (Custom)
-
-This is where 90% of our work goes. ~3M lines of custom code.
-
-#### 4.4.1 GUI Layer
-
-| Component | Purpose | Lines (est.) | Tech |
-|-----------|---------|-------------|------|
-| **WLT-Compositor** | Wayland compositor (window management, compositing) | 200K | C + wlroots |
-| **WLT-Render** | Rendering engine (shadows, blur, animations) | 150K | C + OpenGL/Vulkan |
-| **WLT-Widgets** | Custom widget toolkit (buttons, menus, dialogs) | 500K | C + custom rendering |
-| **WLT-Shell** | Desktop shell (taskbar, launcher, notifications) | 300K | C + WLT-Widgets |
-| **WLT-Settings** | System settings app | 100K | C + WLT-Widgets |
-| **WLT-FileManager** | Custom file manager with Tor + AI + encryption | 150K | C + WLT-Widgets |
-| **WLT-Terminal** | Terminal emulator | 50K | C + WLT-Widgets |
-
-**GUI Total: ~1.45M lines**
-
-#### 4.4.2 System Layer
-
-| Component | Purpose | Lines (est.) | Tech |
-|-----------|---------|-------------|------|
-| **WLT-Init** | Custom init system (replaces systemd) | 20K | C |
-| **WLT-Pkg** | Package manager (Nix-style, atomic, rollback) | 150K | Rust |
-| **WLT-Net** | Network manager (WiFi, Ethernet, VPN config) | 100K | Rust |
-| **WLT-Service** | Service manager (start/stop/monitor daemons) | 50K | C |
-| **WLT-User** | User/session management | 30K | C |
-| **WLT-Update** | Atomic update system (A/B partition swap) | 80K | Rust |
-
-**System Total: ~430K lines**
-
-#### 4.4.3 Security Layer
-
-| Component | Purpose | Lines (est.) | Tech |
-|-----------|---------|-------------|------|
-| **WLT-Sandbox** | App sandboxing (cgroups + namespaces wrapper) | 100K | Rust |
-| **WLT-Crypto** | Disk encryption (LUKS), file encryption | 80K | C + libsodium |
-| **WLT-Tor-Mgr** | Tor control panel (circuit switching, identity) | 50K | Rust |
-| **WLT-Firewall-Cfg** | Firewall config UI (talks to seL4 partition) | 40K | Rust |
-| **WLT-Permissions** | App permission system (like Android but better) | 70K | Rust |
-| **WLT-Audit** | Security audit log (what accessed what) | 30K | Rust |
-
-**Security Total: ~370K lines**
-
-#### 4.4.4 AI Layer
-
-| Component | Purpose | Lines (est.) | Tech |
-|-----------|---------|-------------|------|
-| **WLT-AI-Core** | AI assistant engine (LLM integration, tool use) | 200K | Rust |
-| **WLT-AI-UI** | AI interface (sidebar, voice, commands) | 100K | C + WLT-Widgets |
-| **WLT-AI-Vision** | Screen understanding (VLM, OCR) | 80K | Rust + Python |
-| **WLT-AI-Audio** | Voice input/output (STT, TTS) | 50K | Rust |
-
-**AI Total: ~430K lines**
-
-#### 4.4.5 Core Utilities
-
-| Component | Purpose | Lines (est.) |
-|-----------|---------|-------------|
-| Coreutils (ls, cp, mv, etc.) | Can reuse from BusyBox or write custom | 50K |
-| Shell (bash-compatible) | Can reuse from bash or write custom | 30K |
-| Text editor | Simple built-in editor | 20K |
-| Process manager | Like Task Manager | 30K |
-| Screenshot tool | Screen capture | 10K |
-| Media player | Basic audio/video playback | 50K |
-| Image viewer | View images | 20K |
-| Calculator | Calculator app | 5K |
-
-**Utilities Total: ~215K lines**
-
-### 4.5 Total Line Count
-
-| Layer | Lines | Written By Us? |
-|-------|-------|----------------|
-| Bootloader | 5K | ✅ Yes |
-| seL4 core | 10K | ❌ No (reuse) |
-| seL4 partitions | 50K | ✅ Yes |
-| Linux kernel | 30M | ❌ No (reuse) |
-| GUI layer | 1.45M | ✅ Yes |
-| System layer | 430K | ✅ Yes |
-| Security layer | 370K | ✅ Yes |
-| AI layer | 430K | ✅ Yes |
-| Core utilities | 215K | ⚠️ Partial (some reused) |
-| **TOTAL (our code)** | **~2.96M** | ✅ |
-| **TOTAL (with reused)** | **~33M** | |
-
-**We write ~3M lines. We reuse ~30M lines (Linux kernel + drivers).**
+Never achieved. Multiple genuinely distinct attempts (untyped-pool sizing,
+IOSpace cap allocation) all failed at `capdl-loader`'s `create_objects`
+running out of untyped memory - root-caused as a kernel-bootinfo-untyped-cap
+ceiling (`KernelMaxNumBootinfoUntypedCaps=230`), not fixable by config alone.
+See `docs/context/SEL4_PASSTHROUGH_DEFINITIVE_ARCHIVED_2026-07-29.md` (kept
+for reference, content folded in above) for the full attempt log. Track 2's
+desktop networking bypasses this entirely by not using seL4 at all.
 
 ---
 
-## 5. Security Architecture
+## 4. Linux guest / Track 2 desktop stack
 
-### 5.1 Threat Model
-
-| Threat | Mitigation |
-|--------|-----------|
-| **Kernel exploit** (Linux rootkit) | seL4 isolates critical services — kernel hack can't reach Tor/keys |
-| **Network surveillance** | All traffic through Tor (3-hop onion). No direct connections. |
-| **Disk forensics** | Amnesic mode (RAM-only) + LUKS encryption + secure delete |
-| **Malware** | App sandboxing (cgroups + namespaces). No app can access others. |
-| **Supply chain attack** | Verified boot + reproducible builds + signed packages |
-| **Physical access** | Disk encryption + USB-only boot option + tamper-evident boot |
-| **Side-channel** | seL4 provides temporal isolation (partitions can't spy on each other) |
-| **Firmware attack** | Boot verifier checks firmware signature (if supported by hardware) |
-
-### 5.2 Permission System
-
-```
-Every app has a manifest declaring:
-  ├── Network access: tor-only / direct / none
-  ├── File access: sandbox / home / full
-  ├── Camera/Mic: allowed / denied / ask
-  ├── Location: allowed / denied / ask
-  ├── Contacts: allowed / denied / ask
-  ├── Notifications: allowed / denied
-  └── Background: allowed / denied
-
-User sees a privacy badge on every app:
-  🟢 Tor-only, sandboxed, no camera
-  🟡 Direct network, home access
-  🔴 Full access — review recommended
-```
-
-### 5.3 Anonymity Guarantees
-
-| Guarantee | How |
-|-----------|-----|
-| **IP hidden** | All traffic through Tor. Firewall blocks non-Tor. |
-| **DNS leak-proof** | DNS routed through Tor (no system DNS) |
-| **MAC randomized** | Network interfaces get random MAC on every boot |
-| **No telemetry** | Zero background data collection. No crash reports sent. |
-| **Amnesic option** | Live USB mode — nothing touches disk unless user saves |
-| **Identity isolation** | Different Tor circuits for different apps (compartmentalization) |
-| **Kill switch** | If Tor disconnects, ALL network stops instantly |
+- **Kernel:** custom-built Linux 5.10.218 (per `packages/kernel/wlt-kernel.config`),
+  with `CONFIG_E1000=y` and `CONFIG_VIRTIO_NET=y` built in (not modules) -
+  confirmed via commit `ab054d6`. Older docs citing "Linux 4.8.16"
+  (the archived SECURITY.md, security-whitepaper.md, MODULE_MAP.md)
+  describe an earlier Buildroot-based boot from June 2026 and are stale.
+- **Networking:** real eth0 bring-up via raw ioctl (`qemu_bringup.c`), Tor
+  reported bootstrapping to 100% (see networking doc for what's independently
+  re-verified vs. only build-reported).
+- **Compositor:** wlroots 0.18.2-based, currently **pixman/software
+  rendering** (`WLR_RENDERER=pixman`) because QEMU's virtio-gpu doesn't
+  support EGL/GL contexts in this environment. A conditional GLES2 renderer
+  path (`c30197a`, 2026-07-22) and a real dual-pass Gaussian backdrop blur
+  shader (`b2d9b08`, 2026-07-23) were added as the first steps of the
+  GPU/glassmorphism track (see `docs/specs/wlt-design-system_ARCHIVED_2026-07-29.md`,
+  content folded into the UI doc - it's a genuine forward-looking technical
+  spec, not a stale status claim). Whether GLES2 is actually selected at
+  runtime on this QEMU setup vs. falling back to pixman was not re-confirmed
+  in this pass.
+- **Window management:** real - multi-window desktop (terminal, file
+  manager, launcher, statusbar, settings, Kairos) renders simultaneously,
+  with resize/minimize/maximize/drag/Alt+Tab, verified via QEMU screendump +
+  VLM pixel description (2026-07-12) and confirmed still building as of
+  `9c30d8e` (2026-07-23 Makefile/`-Werror` fix).
 
 ---
 
-## 6. Performance Architecture
+## 5. Technology stack (as actually used, not the original per-component table)
 
-### 6.1 Boot Sequence
-
-```
-0ms       Power on
-50ms      UEFI firmware loads WLT-Boot
-100ms     WLT-Boot verifies seL4 signature
-200ms     WLT-Boot loads seL4 into memory
-300ms     seL4 starts, initializes partitions
-500ms     seL4 loads Linux kernel as guest
-800ms     Linux kernel boots (minimal config)
-1500ms    WLT-Init starts essential services
-2000ms    WLT-Compositor starts, shows desktop
-2500ms    Desktop ready, user can interact
-
-Total boot: <3 seconds
-```
-
-### 6.2 Memory Budget
-
-| Component | RAM (idle) |
-|-----------|-----------|
-| seL4 + partitions | 32MB |
-| Linux kernel | 64MB |
-| WLT-Compositor | 32MB |
-| WLT-Shell (taskbar, etc.) | 16MB |
-| WLT-Init + services | 16MB |
-| Tor daemon | 32MB |
-| AI assistant (idle) | 32MB |
-| Buffers/cache | 32MB |
-| **TOTAL IDLE** | **~256MB** |
-
-### 6.3 Optimization Techniques
-
-| Technique | Impact |
-|-----------|--------|
-| musl libc (not glibc) | -4.5MB RAM |
-| ZRAM (compressed swap in RAM) | 2x effective RAM |
-| Lazy service loading | Faster boot, lower idle |
-| Read-only root filesystem | Faster I/O, no corruption |
-| Prelinked libraries | Faster app launch |
-| No background indexing | Saves CPU + disk |
-| No telemetry/crash reports | Saves CPU + network |
-| Wayland (not X11) | -50MB RAM |
-| Custom init (not systemd) | -100MB RAM, 10x faster boot |
+| Component | Language | Notes |
+|---|---|---|
+| Bootloader (WLT-Boot) | C + inline asm | UEFI, real Ed25519 verified boot (monocypher-backed) |
+| seL4 PDs | C (bare-metal, no libc) | Key Vault, TorPD (Linux guest), Boot Verifier |
+| Compositor, shell, terminal, file manager, settings, editor, task manager, screenshot tool | C | Built on wlroots; all real, not skeletons, per orphaned-code audits |
+| wlt-pkg (package manager) | C | Original spec said Rust; implementation is C (undocumented-decision, flagged in status/roadmap doc) |
+| wlt-update (A/B updater) | C | Spec says Rust (`Cargo.toml`); implementation is C, substantially complete (2,088 lines, zero stubs, needs libsodium-dev at build time) |
+| wlt-net, wlt-sandbox | C | Specs say Rust; implementation is C (flagged in the original `MODULE_MAP.md`'s own "Known Issues" list, and still true) |
+| wlt-ai / Kairos | C | Not Rust+Python as the original spec's file-structure section describes |
+| wlt-defender (Guardian) | C + eBPF (C, `-target bpf`) | See AI/Guardian doc |
 
 ---
 
-## 7. Filesystem Layout
+## 6. Filesystem / package layout (target design, largely not yet realized)
 
-```
-/                           Root
-├── boot/                   Bootloader, kernel, initramfs
-│   ├── WLT-Boot            Custom bootloader
-│   ├── sel4.bin            seL4 image
-│   ├── linux.img           Linux kernel image
-│   └── initramfs.img       Initial RAM filesystem
-├── system/                 Read-only system files (WLT packages)
-│   ├── bin/                System binaries
-│   ├── lib/                System libraries
-│   ├── share/              Shared data (icons, fonts, locales)
-│   └── etc/                System configuration
-├── users/                  User home directories (encrypted)
-│   └── default/            Default user
-│       ├── desktop/        Desktop files
-│       ├── documents/      Documents (encrypted)
-│       ├── downloads/      Downloads (encrypted)
-│       ├── .config/        App configs (encrypted)
-│       ├── .cache/         App cache (cleared on reboot)
-│       └── .local/         App data (encrypted)
-├── persist/                Persistent data (if persistence enabled)
-│   ├── packages/           Installed packages
-│   └── snapshots/          System snapshots (for rollback)
-├── tor/                    Tor data directory (on seL4 partition)
-├── keys/                   Encryption keys (on seL4 partition)
-└── tmp/                    Temporary files (RAM disk)
-
-Filesystems:
-  /          → read-only (squashfs or erofs)
-  /users     → LUKS-encrypted ext4
-  /persist   → LUKS-encrypted btrfs (for snapshots)
-  /tmp       → tmpfs (RAM)
-  /tor       → seL4-managed partition
-  /keys      → seL4-managed partition
-```
+The original blueprint's `/system`, `/users`, `/persist` squashfs+LUKS
+layout, and the Nix-style `/var/wlt/store/` symlink-tree package layout, are
+both still just **design targets** - `wlt-pkg`'s real install/remove
+lifecycle (verified 2026-07-19) operates against a plain local test package,
+not the full store/symlink/rollback design described in the package spec.
+See the package-management doc for current truth.
 
 ---
 
-## 8. Network Architecture
+## 7. Where to look for more detail
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    APP LAYER                              │
-│  Browser │ Chat │ Email │ AI │ Updates                    │
-├─────────────────────────────────────────────────────────┤
-│  WLT-Net (network manager)                               │
-│  Routes ALL traffic to Tor gateway                       │
-├─────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────┐    │
-│  │  seL4: FIREWALL PARTITION                       │    │
-│  │  Rule 1: DENY all non-Tor traffic              │    │
-│  │  Rule 2: ALLOW only Tor gateway to use NIC     │    │
-│  │  Rule 3: Kill switch — if Tor dies, block ALL  │    │
-│  └─────────────────────────────────────────────────┘    │
-├─────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────┐    │
-│  │  seL4: TOR GATEWAY PARTITION                    │    │
-│  │  Tor daemon (3-hop onion routing)              │    │
-│  │  DNS through Tor (no leaks)                    │    │
-│  │  New circuit per app (compartmentalization)    │    │
-│  └─────────────────────────────────────────────────┘    │
-├─────────────────────────────────────────────────────────┤
-│  NETWORK INTERFACE (WiFi/Ethernet)                       │
-│  MAC address randomized on every boot                    │
-└─────────────────────────────────────────────────────────┘
-```
-
-**No app can bypass Tor.** The firewall (in seL4) blocks all non-Tor traffic at the kernel level. Even if an app tries to make a direct connection, the firewall drops the packets.
-
----
-
-## 9. Update System
-
-### 9.1 A/B Partition Updates
-
-```
-Partition A: Current OS (active)
-Partition B: Update target (inactive)
-
-Update process:
-1. Download update to Partition B (while OS runs on A)
-2. Verify signature
-3. Reboot into B
-4. If boot succeeds → mark B as active
-5. If boot fails → auto-rollback to A
-
-Zero downtime, zero risk of bricking.
-```
-
-### 9.2 Package Manager (WLT-Pkg)
-
-| Feature | Description |
-|---------|-------------|
-| **Atomic** | Install/update either fully succeeds or fully fails — no half-states |
-| **Rollback** | Any package can be rolled back to any previous version |
-| **Reproducible** | Same input = same output (verifiable builds) |
-| **Signed** | All packages signed with developer key |
-| **Delta updates** | Only download the changed parts |
-| **Offline** | Can install from local cache |
-
----
-
-## 10. AI Integration Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  WLT-AI (built into the OS, not an app)                  │
-├─────────────────────────────────────────────────────────┤
-│  Capabilities:                                           │
-│  ├── Screen understanding (VLM — sees what you see)     │
-│  ├── Voice commands (STT — always listening on hotword) │
-│  ├── Voice responses (TTS — speaks back)                │
-│  ├── System control (can open apps, change settings)    │
-│  ├── File search ("find the PDF I downloaded last week")│
-│  ├── Code assistance (built-in code editor integration) │
-│  ├── Privacy analysis ("which apps are spying?")        │
-│  └── Anonymity coach ("you're leaking DNS — fix it")    │
-├─────────────────────────────────────────────────────────┤
-│  Privacy:                                                │
-│  ├── Runs LOCALLY (no cloud, unless user opts in)       │
-│  ├── Can use cloud models if user enables               │
-│  ├── Never sends data without explicit permission       │
-│  └── AI memory is encrypted + amnesic option            │
-├─────────────────────────────────────────────────────────┤
-│  Models:                                                 │
-│  ├── On-device: Llama-Vision, Phi-3 (for offline)       │
-│  ├── Cloud (optional): Gemini, Claude, GLM (user picks) │
-│  └── Routing: simple queries → local, complex → cloud   │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## 11. Technology Stack Summary
-
-| Component | Language | Why |
-|-----------|---------|-----|
-| Bootloader | Assembly + C | Low-level hardware control |
-| seL4 partitions | C | seL4 is C-based |
-| Linux kernel | C | (reused — already C) |
-| GUI compositor | C | Performance-critical, wlroots is C |
-| Widget toolkit | C | Performance, direct rendering |
-| Package manager | Rust | Memory safety, modern |
-| Security layer | Rust | Memory safety is critical |
-| AI layer | Rust + Python | Rust for core, Python for ML |
-| Core utilities | C | POSIX compatibility |
-| Build system | Make + CMake | Standard for OS dev |
-
----
-
-## 12. Hardware Requirements
-
-### Minimum (target)
-
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| CPU | x86-64, 2 cores | x86-64, 4+ cores |
-| RAM | 1GB | 4GB+ |
-| Disk | 4GB | 20GB+ |
-| GPU | Any (Mesa-supported) | NVIDIA/AMD/Intel |
-| Network | WiFi or Ethernet | WiFi + Ethernet |
-| Boot | UEFI | UEFI with Secure Boot |
-| USB | 1 port (for Live USB) | 2+ ports |
-
-### Supported Platforms
-
-| Platform | Support | Notes |
-|----------|---------|-------|
-| x86-64 (Intel/AMD) | ✅ Primary | Full support |
-| ARM64 (aarch64) | ⚠️ Future | seL4 supports it, Linux supports it |
-| RISC-V | ⚠️ Future | seL4 has experimental support |
-
----
-
-## 13. Development Environment
-
-### 13.1 Tools Required
-
-| Tool | Purpose | Version |
-|------|---------|---------|
-| **QEMU** | Virtual machine for testing | 8.0+ |
-| **GCC cross-compiler** | Compile for x86-64 target | 13+ |
-| **Rust** | For Rust components | 1.75+ |
-| **NASM** | Assembler for bootloader | 2.16+ |
-| **LD (linker)** | Link kernel + userspace | 2.40+ |
-| **Make** | Build system | 4.4+ |
-| **Git** | Version control | 2.40+ |
-| **OVMF** | UEFI firmware for QEMU | Latest |
-| **GCC + binutils** | For C compilation | 13+ |
-
-### 13.2 Build Pipeline
-
-```
-1. Write code (C/Rust/Assembly)
-2. Cross-compile for x86-64 target
-3. Link into kernel image / userspace binaries
-4. Create initramfs (cpio archive)
-5. Build bootable .iso (with WLT-Boot + seL4 + Linux + initramfs)
-6. Boot .iso in QEMU for testing
-7. If stable → burn to USB for real hardware test
-```
-
-### 13.3 Testing Strategy
-
-| Test Type | Tool | When |
-|-----------|------|------|
-| **Unit tests** | Rust cargo test, C check.h | Every commit |
-| **Integration tests** | QEMU scripts | Every PR |
-| **Boot tests** | QEMU + OVMF | Every build |
-| **Hardware tests** | Real PC + USB | Every release |
-| **Security audit** | Automated scanners | Every release |
-| **Performance benchmarks** | Custom scripts | Every release |
-
----
-
-## 14. Open Questions (To Resolve)
-
-| # | Question | Options | Recommendation |
-|---|----------|---------|----------------|
-| 1 | **Display server** | Wayland (wlroots) vs custom | Wayland (wlroots) — don't reinvent |
-| 2 | **libc** | musl vs glibc vs custom | musl — lighter, simpler |
-| 3 | **Init system** | Custom vs OpenRC vs runit | Custom — smallest, fastest |
-| 4 | **Package format** | Nix-style vs custom vs DEB/RPM | Nix-style — atomic, reproducible |
-| 5 | **Browser** | Firefox-based vs WebKit-based vs custom | Firefox-based (like Tor Browser) |
-| 6 | **Shell** | bash vs zsh vs custom | Custom (simpler, safer) |
-| 7 | **AI model hosting** | On-device vs cloud vs hybrid | Hybrid (local for simple, cloud for complex) |
-| 8 | **seL4 version** | Official vs Genode base | Official seL4 + custom partitions |
-
----
-
-## 15. Risk Register
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
-| seL4 + Linux integration complexity | High | High | Start with seL4's reference VM example |
-| GUI takes 3x longer than estimated | Very High | Medium | Start with wlroots, customize incrementally |
-| Hardware compatibility issues | Medium | High | Linux kernel handles most hardware |
-| Burnout (1-2 years is long) | High | Critical | AI assists with boilerplate; celebrate milestones |
-| Scope creep | Very High | High | Strict MVP definition; freeze features per phase |
-| seL4 learning curve | High | Medium | Study seL4 docs + tutorials first 2 weeks |
-| No users (if that matters) | Medium | Low | Build for yourself first; community second |
-
----
-
-## 16. Success Criteria
-
-| Milestone | Criteria | Target |
-|-----------|---------|--------|
-| **MVP** | Boots in QEMU, shows desktop, has terminal | Month 6 |
-| **Alpha** | Boots on real hardware, has browser + Tor | Month 12 |
-| **Beta** | Daily-driver capable, has app ecosystem | Month 18 |
-| **1.0** | Stable, documented, community-ready | Month 24 |
-
----
-
-## Document Control
-
-| Version | Date | Author | Changes |
-|---------|------|--------|---------|
-| 1.0 | 2026-06-20 | WLTIOS Team | Initial architecture document |
-
----
-
-*WLTIOS — Where Windows meets Linux meets Tails, inspired by all three.*
+- **Security architecture, threat model, verified boot, LUKS:** `docs/SECURITY.md`
+- **AI (Kairos) + Guardian security engine:** `docs/AI_KAIROS.md`
+- **Boot sequence + A/B update/rollback:** `docs/BOOT_AND_UPDATES.md`
+- **Networking, Tor, kill switch, TorPD detail:** `docs/NETWORKING_TOR.md`
+- **Package manager:** `docs/PACKAGE_MANAGEMENT.md`
+- **Compositor, shell, apps, design system:** `docs/UI_COMPOSITOR.md`
+- **What's actually done vs. planned, dated:** `docs/STATUS_ROADMAP.md`
+- **Build rules, agent workflow, coding style:** `docs/PROCESS_METHODOLOGY.md`
+- **Terms, module list, build/user-guide essentials:** `docs/GLOSSARY_REFERENCE.md`
