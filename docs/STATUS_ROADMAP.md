@@ -143,6 +143,23 @@ self-reported "done" in a doc with no commit backing it.
     real call to `wlt_verify_ed25519` (the fail-closed, real-crypto
     path), gate the success message on its actual return value, and
     do not print "Signature verified" on any path that didn't call it.
+12. **Package downloads over Tor are real for wlt-pkg specifically
+    (2026-07-30, source-verified)**: `download.c`'s `wlt_pkg_download()`
+    correctly tunnels - raw connect to 127.0.0.1:9050, a real SOCKS5
+    handshake (domain-name ATYP, no local DNS resolution) to the target,
+    then the HTTP GET over that same already-tunneled socket. This is a
+    separate, self-contained implementation from the orphaned
+    `wlt_socks5.c`/browser gap in item #10 above - it fixes package
+    downloads specifically, it does NOT fix the browser/AI path, which
+    remains orphaned as described in #10.
+13. **Tor-in-vm1 claim needs clarification, not yet fully confirmed**:
+    a report states "[tor-pd] Starting Tor daemon..." appeared in "BOTH
+    VMs" during a boot test. If literal (Tor running in vm0 as well as
+    vm1), that would defeat the isolation point of TorPD entirely -
+    more likely this just means each VM independently printed its own
+    boot-log line, but this hasn't been confirmed either way against a
+    raw log. Get a direct answer on this before treating Tor-in-vm1 as
+    settled.
 
 ## 6. Phase/workstream framing that's still active
 
