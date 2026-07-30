@@ -28,7 +28,7 @@
 | PRD said | Git history (2026-07-24 through 07-28) shows |
 |---|---|
 | Boot Verifier PD: not started | Scaffold (`eddb02d`) + real SHA-256 comparison (`16ef5b9`) |
-| Verified boot: stub/in-progress | Real Ed25519 via monocypher, fail-closed, two-directions-tested (`c169cb2`) |
+| Verified boot: stub/in-progress | Real Ed25519 crypto exists via monocypher, fail-closed, two-directions-tested in isolation (`c169cb2`) - **correction, 2026-07-29: not actually called during boot**, see gap #11 below. The primitive is real; the boot chain doesn't use it yet, and currently prints a false "Signature verified" regardless. |
 | TorPD: blocked (memory ceiling) | Two-VM boot attempted via `optiplex9020` reference pattern (`9897506`) — **correction, 2026-07-29**: this alone was insufficient. `9897506` introduced a `main.c` patch that itself caused a triple fault (`2d16491`, "WS1 partial" — VMM survives but vm1 still doesn't reach userspace). The actual working fix was `2bc3c7a`, which **reverted** the `main.c` patch entirely (the optiplex9020 reference pattern does not patch main.c) — independently verified: the commit diff contains the raw serial log showing both vm0 and vm1 reaching Buildroot login (`Welcome to Buildroot` / `buildroot login:` each appearing twice, `VM_FATAL=0, triple=0`). |
 | GPU-accelerated compositor: not started | Conditional GLES2 path (`c30197a`) + real dual-pass Gaussian blur (`b2d9b08`) |
 | Desktop UX (snapping, context menus): not started | Window snapping (`99b69b3`), right-click context menu (`816cb7c`) |
@@ -121,6 +121,28 @@ self-reported "done" in a doc with no commit backing it.
     has already found and fixed once elsewhere - check for it explicitly
     when this gets wired, don't assume the earlier fix pattern
     generalizes automatically.
+11. **Verified boot is not actually enforced at boot time, and the
+    bootloader prints a false success message (found 2026-07-29,
+    source-verified directly - this is more serious than "unwired")**:
+    `src/boot/wlt-boot/boot.c`'s `efi_main()` has, inside
+    `if (config.verify_signature)`: a commented-out call to
+    `wlt_verify_kernel` and its error check, followed by an
+    UNCONDITIONAL, NOT-commented-out `wlt_console_info("Signature
+    verified")`. This means the boot console prints "Signature
+    verified" regardless of whether any verification occurred - which
+    today is always, since nothing runs. Neither `wlt_verify_kernel`
+    (SHA-256) nor the new, real `wlt_verify_ed25519` (monocypher,
+    confirmed correct in isolation - see the Boot Verifier PD and
+    verified-boot entries above) is called anywhere in `boot.c`. The
+    kernel-jump step immediately after is also a bare TODO stub -
+    `efi_main` does not yet transfer control to a kernel at all, so this
+    is an early-stage bootloader skeleton, not a functioning boot chain.
+    **Do not describe "verified boot" as done or enforced until this is
+    fixed** - the crypto primitive being correct does not mean the
+    boot process uses it. Fix: replace the commented-out block with a
+    real call to `wlt_verify_ed25519` (the fail-closed, real-crypto
+    path), gate the success message on its actual return value, and
+    do not print "Signature verified" on any path that didn't call it.
 
 ## 6. Phase/workstream framing that's still active
 
