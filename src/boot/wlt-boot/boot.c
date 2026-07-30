@@ -65,14 +65,34 @@ efi_main(void *image_handle, void *system_table)
     }
     wlt_console_info("Kernel loaded");
 
-    /* 5. Verify signature */
+    /* 5. Verify signature via real Ed25519 (monocypher, Section A fix) */
     if (config.verify_signature)
     {
-        /* TODO(wlt-boot): Load signature file and verify */
-        wlt_console_info("Verifying kernel signature...");
-        /* err = wlt_verify_kernel(kernel_data, kernel_size, sig_data, sig_size); */
-        /* if (err != WLT_BOOT_OK) { wlt_console_error("Signature invalid!"); return err; } */
-        wlt_console_info("Signature verified");
+        wlt_console_info("Verifying kernel signature (Ed25519)...");
+        /* Load the signature file from the ESP */
+        wlt_kernel_image_t sig_img;
+        char sig_path[256];
+        snprintf(sig_path, sizeof(sig_path), "%s.sig", config.kernel_path);
+        err = wlt_loader_load(sig_path, &sig_img);
+        if (err != WLT_BOOT_OK)
+        {
+            wlt_console_error("Failed to load signature file");
+            return err;
+        }
+        /* Real Ed25519 verification via monocypher. Fail-closed. */
+        err = wlt_verify_ed25519(kernel.data, kernel.size,
+                                 sig_img.data, sig_img.size,
+                                 NULL);
+        if (err != WLT_BOOT_OK)
+        {
+            wlt_console_error("Signature INVALID - refusing to boot!");
+            return err;
+        }
+        wlt_console_info("Signature verified (Ed25519 real check)");
+    }
+    else
+    {
+        wlt_console_warn("Signature verification DISABLED (debug mode)");
     }
 
     /* 6. Jump to kernel */
