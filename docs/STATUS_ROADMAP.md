@@ -29,10 +29,10 @@
 |---|---|
 | Boot Verifier PD: not started | Scaffold (`eddb02d`) + real SHA-256 comparison (`16ef5b9`) |
 | Verified boot: stub/in-progress | Real Ed25519 via monocypher, fail-closed, two-directions-tested (`c169cb2`) |
-| TorPD: blocked (memory ceiling) | Two-VM boot fixed via `optiplex9020` reference pattern (`9897506`) |
+| TorPD: blocked (memory ceiling) | Two-VM boot attempted via `optiplex9020` reference pattern (`9897506`) — **correction, 2026-07-29**: this alone was insufficient. `9897506` introduced a `main.c` patch that itself caused a triple fault (`2d16491`, "WS1 partial" — VMM survives but vm1 still doesn't reach userspace). The actual working fix was `2bc3c7a`, which **reverted** the `main.c` patch entirely (the optiplex9020 reference pattern does not patch main.c) — independently verified: the commit diff contains the raw serial log showing both vm0 and vm1 reaching Buildroot login (`Welcome to Buildroot` / `buildroot login:` each appearing twice, `VM_FATAL=0, triple=0`). |
 | GPU-accelerated compositor: not started | Conditional GLES2 path (`c30197a`) + real dual-pass Gaussian blur (`b2d9b08`) |
 | Desktop UX (snapping, context menus): not started | Window snapping (`99b69b3`), right-click context menu (`816cb7c`) |
-| Apps (editor, task manager, screenshot, browser): not started | All four landed (`529a104`, `25014b7`, `cb3daab`, `5bf6a83`) |
+| Apps (editor, task manager, screenshot, browser): not started | Editor/task manager/screenshot landed real (`529a104`, `25014b7`, `cb3daab`). Browser (`5bf6a83`) is **demo-only** — see correction below, its own file's `main()` never fetches anything real. |
 | Package repo hosting: none | Real repo, 3 packages + index (`5dd70af`) |
 
 **Lesson applied throughout this doc set:** a PRD/status doc's own "last
@@ -100,6 +100,27 @@ self-reported "done" in a doc with no commit backing it.
    strong claims about any of the four.
 9. **Active RAM/kernel-keyring wipe for amnesia** does not exist - amnesia
    today is passive (tmpfs only).
+10. **Tor Browser does not fetch real pages, and its SOCKS5 module is
+    orphaned code (found 2026-07-29, source-verified directly)**:
+    `wlt-browser.c`'s `main()` never calls any networking function at
+    all - it prints a static, hardcoded "architecture demo" string
+    (which literally contains the text "SOCKS5 proxy support: tracked
+    follow-up") and exercises only its own HTML-stripping/line-format
+    functions on that fixed string. Separately, `wlt_socks5.c` (added in
+    `e593468`) is a real, correctly-structured RFC 1928 SOCKS5 client -
+    but nothing in the codebase calls `wlt_socks5_connect()`, including
+    `wlt_http.c`'s own `wlt_http_post()`, which does its own direct
+    `gethostbyname()`+`connect()` to the resolved host, bypassing any
+    proxy entirely. **No live Tor-bypass risk exists today** (nothing
+    fetches anything real yet), but the commit message ("SOCKS5 Tor
+    proxy support for wlt_http... real fetch") overclaims - there is no
+    real fetch anywhere in this path. Wiring `wlt_http_post` to route
+    through an already-established `wlt_socks5_connect()` socket (rather
+    than its own direct connect) is the actual remaining work, and it's
+    the same bug class (AI egress bypassing Tor, E-C1/C2) this project
+    has already found and fixed once elsewhere - check for it explicitly
+    when this gets wired, don't assume the earlier fix pattern
+    generalizes automatically.
 
 ## 6. Phase/workstream framing that's still active
 
