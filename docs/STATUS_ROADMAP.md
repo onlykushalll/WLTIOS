@@ -160,6 +160,20 @@ self-reported "done" in a doc with no commit backing it.
     boot-log line, but this hasn't been confirmed either way against a
     raw log. Get a direct answer on this before treating Tor-in-vm1 as
     settled.
+14. **FR-GUI-11 (context menu) is not actually a context menu (found
+    2026-07-30, source-verified directly)**: `816cb7c`'s own commit
+    message is honest about the mechanism ("Plain right-click cycles:
+    maximize -> restore -> minimize") - the code genuinely does that,
+    no fabrication. But this doesn't satisfy the requirement as asked:
+    there is no menu surface rendered at all (no visible list of
+    options, no click-to-select) - it's a stateless right-click cycling
+    shortcut mislabeled with the FR-GUI-11 tag. Additionally, `ctx_state`
+    is a single global `static int`, not per-window - right-clicking
+    window B continues wherever window A's clicks left the counter,
+    rather than each window cycling independently, which would feel
+    broken to a real user (a freshly-clicked window doesn't reliably
+    start at "maximize"). FR-GUI-11 still needs a real menu surface
+    built - this entry should not be read as "done."
 
 ## 6. Phase/workstream framing that's still active
 
