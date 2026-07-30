@@ -88,4 +88,7 @@ const char *wlt_pkg_error_str(wlt_pkg_error_t err);
 }
 #endif
 
+/* Download a package from a remote URL via Tor SOCKS5 (WS4.2). */
+wlt_pkg_error_t wlt_pkg_download(const char *url, const char *dest_path);
+
 #endif /* WLT_PKG_H */

@@ -260,22 +260,49 @@ wlt_pkg_install(const char *name)
 
     if (access(pkg_path, R_OK) != 0)
     {
-        /* No local package — register as installed without extraction
-         * (for virtual/meta packages) */
-        printf("[wlt-pkg] No tarball at %s — registering %s as virtual\n",
-               pkg_path, name);
-        if (!existing)
+        /* No local tarball — try remote download via Tor (WS4.2).
+         * Routes through Tor's SOCKS5 proxy (127.0.0.1:9050) via
+         * wlt_pkg_download() in download.c. The repo URL comes from
+         * the WLT_PKG_REPO_URL env var (e.g. "http://127.0.0.1:8080"). */
+        const char *repo_url = getenv("WLT_PKG_REPO_URL");
+        if (repo_url != NULL && repo_url[0] != '\0')
         {
-            if (g_db.count >= 256) return WLT_PKG_ERR_NOMEM;
-            existing = &g_db.packages[g_db.count];
-            memset(existing, 0, sizeof(*existing));
-            strncpy(existing->name, name, WLT_PKG_MAX_NAME - 1);
-            strncpy(existing->version, "1.0.0", WLT_PKG_MAX_VERSION - 1);
-            g_db.count++;
+            char download_url[512];
+            snprintf(download_url, sizeof(download_url), "%s/%s-1.0.0-wlt.tar.gz",
+                     repo_url, name);
+            printf("[wlt-pkg] Downloading %s from %s (via Tor SOCKS5)...\n",
+                   name, download_url);
+            wlt_pkg_error_t dl_err = wlt_pkg_download(download_url, pkg_path);
+            if (dl_err == WLT_PKG_OK && access(pkg_path, R_OK) == 0)
+            {
+                printf("[wlt-pkg] Downloaded %s (%ld bytes)\n", name,
+                       (long)ftell(fopen(pkg_path, "r")));
+                /* Fall through to extraction below */
+            }
+            else
+            {
+                printf("[wlt-pkg] Download failed for %s (err=%d)\n", name, dl_err);
+                return WLT_PKG_ERR_NOT_FOUND;
+            }
         }
-        existing->installed = true;
-        db_save();
-        return WLT_PKG_OK;
+        else
+        {
+            /* No repo URL configured — register as virtual (original behavior) */
+            printf("[wlt-pkg] No tarball at %s and no WLT_PKG_REPO_URL set\n",
+                   pkg_path);
+            if (!existing)
+            {
+                if (g_db.count >= 256) return WLT_PKG_ERR_NOMEM;
+                existing = &g_db.packages[g_db.count];
+                memset(existing, 0, sizeof(*existing));
+                strncpy(existing->name, name, WLT_PKG_MAX_NAME - 1);
+                strncpy(existing->version, "1.0.0", WLT_PKG_MAX_VERSION - 1);
+                g_db.count++;
+            }
+            existing->installed = true;
+            db_save();
+            return WLT_PKG_OK;
+        }
     }
 
     /* Generate a simple hash from name+timestamp (not crypto, just unique) */
