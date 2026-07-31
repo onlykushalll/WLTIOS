@@ -174,23 +174,54 @@ self-reported "done" in a doc with no commit backing it.
     broken to a real user (a freshly-clicked window doesn't reliably
     start at "maximize"). FR-GUI-11 still needs a real menu surface
     built - this entry should not be read as "done."
-15. **`d252318`'s Section A fix (boot.c false-verification bug) does
-    not compile as committed (found 2026-07-30, source-verified
-    directly)**: `wlt_verify_ed25519`'s real prototype in `verify.h`
-    takes exactly 4 parameters (`data, data_size, sig[64], pubkey[32]`).
-    `boot.c`'s new call passes 5 arguments -
-    `wlt_verify_ed25519(kernel.data, kernel.size, sig_img.data,
-    sig_img.size, NULL)` - with `sig_img.size` (an integer) landing in
-    the `pubkey` slot (expects a 32-byte pointer) and a stray extra
-    `NULL` with no matching parameter. `verify.h` is `#include`d in
-    boot.c, so the real prototype is in scope - a 5-argument call
-    against a visible 4-parameter prototype is a hard compile error in
-    standard C, not a warning, regardless of `-Werror`. This has not
-    been build-tested. The underlying intent (fix the false-positive
-    message) is correct and worth keeping - the fix needs the actual
-    boot public key loaded (per `verify.c`'s own documented convention,
-    `/boot/keys/boot-pubkey.bin` on the ESP) and passed as the real
-    4th argument, replacing both `sig_img.size` and the stray `NULL`.
+15. **`d252318`'s Section A fix (boot.c false-verification bug):
+    argument-count bug fixed in `8b2e826`, but that same fix introduced
+    a new, different bug (found 2026-07-31, source-verified directly)**:
+    the arity mismatch from `d252318` (5 args vs. 4-param prototype) was
+    correctly fixed - `8b2e826` now loads a real boot pubkey and passes
+    exactly 4 arguments matching the prototype. But the new pubkey-load
+    call itself is broken: `wlt_loader_load("\boot\keys\boot-pubkey.bin",
+    &pubkey_img)` uses **unescaped backslashes in a C string literal**.
+    `\b` is the backspace escape (0x08), `\k` is not a valid C escape
+    sequence at all (undefined/warned, typically dropped under `-Wall`,
+    a hard error under strict `-Werror`). The resulting string does not
+    decode to the intended path - it's `<backspace>oot<?>eys<backspace>
+    oot-pubkey.bin`, not a real filesystem path. Confirmed inconsistent
+    with the SAME function's own comment and error-message strings two
+    lines above and below it, both of which correctly use forward
+    slashes (`/boot/keys/boot-pubkey.bin`), matching `verify.c`'s
+    documented convention. Even if this somehow compiles, every real
+    boot with `verify_signature` enabled would fail to find the key and
+    refuse to boot - fail-closed, but for the wrong reason (a malformed
+    path, not a real security check). Fix: change the path string to
+    use forward slashes (or properly escaped backslashes), matching the
+    surrounding comment/error text in the same function.
+16. **Section D ("wire browser SOCKS5") only partially happened - the
+    browser itself is still not wired (found 2026-07-31, source-verified
+    directly)**: `2208dde` built `wlt_http_tor.c`/`wlt_http_get_tor()`/
+    `wlt_http_post_tor()` - real, and its own commit message is honest
+    about scope ("the browser CAN now use these instead of the
+    direct-connect versions" - not "now uses"). But `wlt-browser.c` has
+    zero references to `wlt_http_tor` - it's still the same demo-only
+    file described in gap #10. Do not read "Section D done" as "the
+    browser fetches real pages through Tor" - it doesn't yet. The
+    now-real `wlt_http_tor.c` module needs an actual call site added to
+    `wlt-browser.c`'s `main()`, replacing the hardcoded demo string.
+17. **Section E ("real drag-and-drop") built a real but completely
+    orphaned module - not compiled into the file manager at all (found
+    2026-07-31, source-verified directly)**: `be06d8d` added
+    `file_dnd.c` (105 lines, real mark-paste logic, real `rename()`
+    calls) - but `filemanager.c` has zero references to it (`file_dnd`,
+    `dnd_mark`, `dnd_paste` - no matches), AND `wlt-filemanager/Makefile`
+    does not list `file_dnd.c` as a source file at all, meaning it isn't
+    even compiled into the `wlt-filemanager` binary today, let alone
+    reachable by a keypress. This is the third instance of the same
+    pattern this session (see #10, #16): a real module written, but the
+    actual wiring into the thing a user would touch is a separate step
+    that didn't happen. Fix: add `file_dnd.c` to the Makefile's source
+    list, then wire its mark/paste functions into `filemanager.c`'s
+    keyboard handling (the 'm'/'p' keys per the commit message's own
+    described UX).
 
 ## 6. Phase/workstream framing that's still active
 
