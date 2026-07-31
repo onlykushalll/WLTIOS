@@ -79,10 +79,26 @@ efi_main(void *image_handle, void *system_table)
             wlt_console_error("Failed to load signature file");
             return err;
         }
-        /* Real Ed25519 verification via monocypher. Fail-closed. */
+        /* Real Ed25519 verification via monocypher. Fail-closed.
+         * The boot pubkey (32 bytes) is loaded from /boot/keys/boot-pubkey.bin
+         * on the ESP. It is SEPARATE from the package signing key (trust boundary).
+         * Signature is always 64 bytes (Ed25519 standard). */
+        wlt_kernel_image_t pubkey_img;
+        err = wlt_loader_load("\boot\keys\boot-pubkey.bin", &pubkey_img);
+        if (err != WLT_BOOT_OK)
+        {
+            wlt_console_error("Failed to load boot public key");
+            wlt_console_error("Expected at /boot/keys/boot-pubkey.bin (32 bytes)");
+            return err;
+        }
+        if (pubkey_img.size < 32)
+        {
+            wlt_console_error("Boot public key too short (need 32 bytes)");
+            return WLT_BOOT_ERR_INVALID_ARG;
+        }
         err = wlt_verify_ed25519(kernel.data, kernel.size,
-                                 sig_img.data, sig_img.size,
-                                 NULL);
+                                 sig_img.data,
+                                 pubkey_img.data);
         if (err != WLT_BOOT_OK)
         {
             wlt_console_error("Signature INVALID - refusing to boot!");
