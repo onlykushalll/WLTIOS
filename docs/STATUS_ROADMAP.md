@@ -174,6 +174,23 @@ self-reported "done" in a doc with no commit backing it.
     broken to a real user (a freshly-clicked window doesn't reliably
     start at "maximize"). FR-GUI-11 still needs a real menu surface
     built - this entry should not be read as "done."
+15. **`d252318`'s Section A fix (boot.c false-verification bug) does
+    not compile as committed (found 2026-07-30, source-verified
+    directly)**: `wlt_verify_ed25519`'s real prototype in `verify.h`
+    takes exactly 4 parameters (`data, data_size, sig[64], pubkey[32]`).
+    `boot.c`'s new call passes 5 arguments -
+    `wlt_verify_ed25519(kernel.data, kernel.size, sig_img.data,
+    sig_img.size, NULL)` - with `sig_img.size` (an integer) landing in
+    the `pubkey` slot (expects a 32-byte pointer) and a stray extra
+    `NULL` with no matching parameter. `verify.h` is `#include`d in
+    boot.c, so the real prototype is in scope - a 5-argument call
+    against a visible 4-parameter prototype is a hard compile error in
+    standard C, not a warning, regardless of `-Werror`. This has not
+    been build-tested. The underlying intent (fix the false-positive
+    message) is correct and worth keeping - the fix needs the actual
+    boot public key loaded (per `verify.c`'s own documented convention,
+    `/boot/keys/boot-pubkey.bin` on the ESP) and passed as the real
+    4th argument, replacing both `sig_img.size` and the stray `NULL`.
 
 ## 6. Phase/workstream framing that's still active
 
