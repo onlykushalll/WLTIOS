@@ -379,6 +379,23 @@ wlt_sandbox_launch(wlt_SandboxManager *m, const char *manifest_path,
                 wlt_perms_audit_log(WLT_PERMS_AUDIT_GRANTED, mfst.name,
                                     WLT_PERM_NETWORK, "launch", "system",
                                     wlt_perms_decision_str(d));
+
+                /* Filesystem permission check (Section C). */
+                wlt_perms_decision_t fs_d =
+                    wlt_perms_check(&perms, mfst.name, WLT_PERM_FILESYSTEM);
+                if (fs_d == WLT_PERMS_DECISION_DENY &&
+                    mfst.filesystem != WLT_FS_NONE) {
+                    WLT_LAUNCH_LOG_ERR("PERMISSION DENIED: %s requests filesystem (%s) but grant is DENY",
+                                       mfst.name, wlt_manifest_fs_str(mfst.filesystem));
+                    mfst.filesystem = WLT_FS_NONE;
+                    wlt_perms_audit_log(WLT_PERMS_AUDIT_DENIED, mfst.name,
+                                        WLT_PERM_FILESYSTEM, "launch", "system",
+                                        "filesystem denied, overridden to NONE");
+                } else {
+                    wlt_perms_audit_log(WLT_PERMS_AUDIT_GRANTED, mfst.name,
+                                        WLT_PERM_FILESYSTEM, "launch", "system",
+                                        wlt_perms_decision_str(fs_d));
+                }
             } else {
                 wlt_perms_audit_log(WLT_PERMS_AUDIT_INFO, mfst.name,
                                     WLT_PERM_NETWORK, "launch", "system",
