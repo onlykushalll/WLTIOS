@@ -84,7 +84,7 @@ efi_main(void *image_handle, void *system_table)
          * on the ESP. It is SEPARATE from the package signing key (trust boundary).
          * Signature is always 64 bytes (Ed25519 standard). */
         wlt_kernel_image_t pubkey_img;
-        err = wlt_loader_load("\boot\keys\boot-pubkey.bin", &pubkey_img);
+        err = wlt_loader_load("/boot/keys/boot-pubkey.bin", &pubkey_img);
         if (err != WLT_BOOT_OK)
         {
             wlt_console_error("Failed to load boot public key");

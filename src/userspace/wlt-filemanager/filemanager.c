@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include <wayland-client.h>
+#include "file_dnd.h"
 #include <wayland-client-protocol.h>
 #include "xdg-shell-client-protocol.h"
 
@@ -171,7 +172,7 @@ static void render(void)
         y+=CH+2;}
 
     fr(p,0,WIN_H-20,WIN_W,20,0xFF3E3E2A);
-    dt(8,WIN_H-16,"Up/Down:select  Enter:open  BS:up  q:quit",p,0xFF888888);
+    dt(8,WIN_H-16,"Up/Dn:select Enter:open BS:up m:mark p:paste q:quit",p,0xFF888888);
     wl_surface_attach(surface,buffer,0,0);
     wl_surface_damage(surface,0,0,WIN_W,WIN_H);
     wl_surface_commit(surface);
@@ -219,7 +220,7 @@ static void kb_leave(void*d,struct wl_keyboard*k,uint32_t s,struct wl_surface*su
 static void kb_key(void*d,struct wl_keyboard*k,uint32_t se,uint32_t t,uint32_t key,uint32_t st)
 {(void)d;(void)k;(void)se;(void)t;if(st!=1)return;
 switch(key){case 103:if(selected>0){selected--;render();}break;case 108:if(selected<entry_count-1){selected++;render();}break;
-case 28:nav_into();break;case 14:nav_up();break;case 16:running=0;break;}}
+case 28:nav_into();break;case 14:nav_up();break;case 16:running=0;break;case 50:file_dnd_mark(entries[selected].name,current_path);render();break;case 33:file_dnd_paste(current_path);scan_dir(current_path);render();break;}}
 static void kb_mods(void*d,struct wl_keyboard*k,uint32_t s,uint32_t a,uint32_t b,uint32_t c,uint32_t e){(void)d;(void)k;(void)s;(void)a;(void)b;(void)c;(void)e;}
 static const struct wl_keyboard_listener kbl={.keymap=kb_keymap,.enter=kb_enter,.leave=kb_leave,.key=kb_key,.modifiers=kb_mods};
 
