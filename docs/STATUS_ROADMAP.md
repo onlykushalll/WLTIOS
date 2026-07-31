@@ -174,54 +174,21 @@ self-reported "done" in a doc with no commit backing it.
     broken to a real user (a freshly-clicked window doesn't reliably
     start at "maximize"). FR-GUI-11 still needs a real menu surface
     built - this entry should not be read as "done."
-15. **`d252318`'s Section A fix (boot.c false-verification bug):
-    argument-count bug fixed in `8b2e826`, but that same fix introduced
-    a new, different bug (found 2026-07-31, source-verified directly)**:
-    the arity mismatch from `d252318` (5 args vs. 4-param prototype) was
-    correctly fixed - `8b2e826` now loads a real boot pubkey and passes
-    exactly 4 arguments matching the prototype. But the new pubkey-load
-    call itself is broken: `wlt_loader_load("\boot\keys\boot-pubkey.bin",
-    &pubkey_img)` uses **unescaped backslashes in a C string literal**.
-    `\b` is the backspace escape (0x08), `\k` is not a valid C escape
-    sequence at all (undefined/warned, typically dropped under `-Wall`,
-    a hard error under strict `-Werror`). The resulting string does not
-    decode to the intended path - it's `<backspace>oot<?>eys<backspace>
-    oot-pubkey.bin`, not a real filesystem path. Confirmed inconsistent
-    with the SAME function's own comment and error-message strings two
-    lines above and below it, both of which correctly use forward
-    slashes (`/boot/keys/boot-pubkey.bin`), matching `verify.c`'s
-    documented convention. Even if this somehow compiles, every real
-    boot with `verify_signature` enabled would fail to find the key and
-    refuse to boot - fail-closed, but for the wrong reason (a malformed
-    path, not a real security check). Fix: change the path string to
-    use forward slashes (or properly escaped backslashes), matching the
-    surrounding comment/error text in the same function.
-16. **Section D ("wire browser SOCKS5") only partially happened - the
-    browser itself is still not wired (found 2026-07-31, source-verified
-    directly)**: `2208dde` built `wlt_http_tor.c`/`wlt_http_get_tor()`/
-    `wlt_http_post_tor()` - real, and its own commit message is honest
-    about scope ("the browser CAN now use these instead of the
-    direct-connect versions" - not "now uses"). But `wlt-browser.c` has
-    zero references to `wlt_http_tor` - it's still the same demo-only
-    file described in gap #10. Do not read "Section D done" as "the
-    browser fetches real pages through Tor" - it doesn't yet. The
-    now-real `wlt_http_tor.c` module needs an actual call site added to
-    `wlt-browser.c`'s `main()`, replacing the hardcoded demo string.
-17. **Section E ("real drag-and-drop") built a real but completely
-    orphaned module - not compiled into the file manager at all (found
-    2026-07-31, source-verified directly)**: `be06d8d` added
-    `file_dnd.c` (105 lines, real mark-paste logic, real `rename()`
-    calls) - but `filemanager.c` has zero references to it (`file_dnd`,
-    `dnd_mark`, `dnd_paste` - no matches), AND `wlt-filemanager/Makefile`
-    does not list `file_dnd.c` as a source file at all, meaning it isn't
-    even compiled into the `wlt-filemanager` binary today, let alone
-    reachable by a keypress. This is the third instance of the same
-    pattern this session (see #10, #16): a real module written, but the
-    actual wiring into the thing a user would touch is a separate step
-    that didn't happen. Fix: add `file_dnd.c` to the Makefile's source
-    list, then wire its mark/paste functions into `filemanager.c`'s
-    keyboard handling (the 'm'/'p' keys per the commit message's own
-    described UX).
+15. **RESOLVED 2026-07-31 (`9a2200f`), independently re-verified**: the
+    backslash-path bug in `boot.c`'s pubkey load is fixed - confirmed by
+    direct read, line 87 now reads
+    `wlt_loader_load("/boot/keys/boot-pubkey.bin", &pubkey_img)`,
+    matching the surrounding comment/error-message convention.
+16. **RESOLVED 2026-07-31 (`9a2200f`), independently re-verified**:
+    `wlt-browser.c` now genuinely calls `wlt_http_get_tor()` (confirmed
+    by direct read, line 86) - the hardcoded demo string is gone, the
+    browser fetches real pages through Tor SOCKS5.
+17. **RESOLVED 2026-07-31 (`9a2200f`), independently re-verified**:
+    `file_dnd.c` is genuinely in `wlt-filemanager/Makefile`'s `SRCS`
+    (confirmed by direct read), and `filemanager.c`'s keyboard handler
+    genuinely calls `file_dnd_mark()`/`file_dnd_paste()` on real
+    keypresses (case 50 / case 33, confirmed by direct read) - no
+    longer an orphaned module.
 
 ## 6. Phase/workstream framing that's still active
 
