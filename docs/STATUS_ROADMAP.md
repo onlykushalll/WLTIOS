@@ -84,9 +84,11 @@ self-reported "done" in a doc with no commit backing it.
    Linux userspace (kill switch), not seL4-level.
 3. **`wlt-ai/tools.c run_command` still shells out via `popen`** with only
    an 11-entry denylist - a real, live security gap, not hypothetical.
-4. **Only network permission is enforced at launch** - camera/mic/location/
-   filesystem/etc. are modeled and persisted by `wlt-permissions` but not
-   gated by `wlt-sandbox/launch.c`.
+4. **Only network permission is actually enforced at launch - the new
+   filesystem check does not work (found 2026-08-01, source-verified
+   directly, see gap #18)** - camera/mic/location/etc. remain entirely
+   unmodeled at enforcement time; filesystem was attempted but is a
+   no-op due to a real bug.
 5. **eBPF hook attachment on a real (non-degraded) boot** needs a fresh
    verification pass - the load path and tracefs mount are real, but a
    current serial-log proof of "N hooks attached" was not reproduced here.
@@ -189,6 +191,36 @@ self-reported "done" in a doc with no commit backing it.
     genuinely calls `file_dnd_mark()`/`file_dnd_paste()` on real
     keypresses (case 50 / case 33, confirmed by direct read) - no
     longer an orphaned module.
+18. **`launch.c`'s filesystem permission enforcement (Section C,
+    `6837096`) is a real bug, not real enforcement - it modifies a
+    struct that's discarded before the sandboxed process is ever set up
+    (found 2026-08-01, source-verified directly by reading the full
+    function)**: the DENY-override logic operates on a *local* variable
+    - `wlt_SandboxManifest mfst;` loaded once, at the top of
+    `wlt_sandbox_launch()`, purely for the permission check. On DENY it
+    sets `mfst.filesystem = WLT_FS_NONE;` - but `mfst` goes out of scope
+    at the end of that block and is never referenced again. The actual
+    sandboxed child is set up later via `child_setup(app, ...)` ->
+    `wlt_sandbox_setup_filesystem(&app->manifest, ...)`, where
+    `app->manifest` is a **separate struct**, loaded independently
+    inside `prepare_app_slot()` (`wlt_manifest_load(manifest_path,
+    &app->manifest)` - same path string, different memory, called after
+    the permission-check block already finished). The override on
+    `mfst` has no path to `app->manifest` at all. Net effect: the DENY
+    decision is correctly detected, correctly logged
+    ("PERMISSION DENIED: ... filesystem ... DENY"), and correctly
+    audit-logged - and then does nothing. An app with a DENY filesystem
+    grant launches with its full originally-manifested filesystem access
+    regardless. Contrast with the network check three lines above it in
+    the same function, which is real: on DENY it `return`s and blocks
+    the launch outright, rather than trying to mutate a field that gets
+    thrown away. **Do not read filesystem permission enforcement as done
+    until this is fixed.** Fix: either move this check to after
+    `prepare_app_slot()` runs (so `app->manifest` exists) and mutate
+    `app->manifest.filesystem` directly, or carry the DENY decision
+    forward as an explicit flag and apply it to `app->manifest` before
+    `child_setup()` is called - either way, the override has to land on
+    the struct that `wlt_sandbox_setup_filesystem()` actually reads.
 
 ## 6. Phase/workstream framing that's still active
 
