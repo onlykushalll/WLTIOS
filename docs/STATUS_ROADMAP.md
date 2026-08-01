@@ -320,6 +320,47 @@ self-reported "done" in a doc with no commit backing it.
     on table-full) rather than growing unbounded-but-capped with no
     reclamation, and log/alert when the table is full rather than silently
     dropping coverage.
+23. **`net_engine.c`'s `/proc/net/{tcp,tcp6,udp,udp6}` parser appears to
+    silently fail on every line, meaning the Tor-leak-detection engine
+    may have never actually detected anything (found 2026-08-01,
+    source-verified directly - this is the most severe finding of this
+    review pass, verify the sscanf analysis independently before
+    treating it as certain, but the reasoning below is precise, not
+    a guess)**: the Linux kernel formats each `/proc/net/tcp`-family line
+    with `tx_queue` and `rx_queue` joined by a colon into ONE token
+    (`%08X:%08X`), and likewise `tr`/`tm->when` (`%02X:%08lX`) - not as
+    independent space-separated numbers. `check_proto_uid()`'s parser -
+    `sscanf(line, "%*d: %63s %63s %15s %lu %lu %lu %lu %u %u %llu", ...)`
+    - treats these as 4 separate `%lu` fields. Tracing the match: the
+    first `%lu` reads up to the internal colon in `tx_queue:rx_queue` and
+    stops (colon isn't numeric); the next `%lu` must then consume the
+    leftover `:00000000..`, but `%lu` only skips leading *whitespace*, not
+    a colon, so it fails to match immediately. `sscanf` returns 4
+    (`local`, `remote`, `state`, plus the truncated `tx_q`) - under the
+    `if (n < 8) continue;` threshold - so every line in every one of the
+    four proc files is silently skipped, every call, unconditionally.
+    `g_net_check_leak()` therefore always returns "no leak" /
+    `G_VERDICT_CLEAN` regardless of actual traffic. This is specifically
+    the engine meant to catch the exact bug class (non-Tor egress /
+    DNS-style leaks) this project has already found real instances of
+    twice elsewhere (AI egress, orphaned browser SOCKS5) - if this
+    analysis is correct, the detection layer meant to catch a THIRD
+    instance of that bug class has itself been silently non-functional.
+    Fix: parse `local`/`remote`/`state` as strings (already correct),
+    then parse the two colon-joined fields as strings too (or with
+    `%*x:%*x` to discard them) before reading `uid` - do not assume
+    space-separated where the kernel emits colon-separated.
+24. **Separately in the same file: loaded Tor consensus guard-node IPs
+    are never consulted (found 2026-08-01, source-verified directly)**:
+    `load_tor_consensus()` genuinely parses `/var/lib/tor/cached-
+    consensus` and populates `ne->guard_ips[]`/`ne->n_guard_ips` - real
+    file I/O, real parsing. But neither `check_proto_uid()` nor
+    `g_net_check_leak()` ever reads `guard_ips`/`n_guard_ips` - the
+    "flag Tor connections to non-guard IPs" feature described in the
+    struct's own comment ("Phase 4.4... flagged SUSPICIOUS_TOR_
+    DESTINATION") is loaded into memory and then never used. Same
+    build-but-not-wired pattern as gaps #10, #16, #17 earlier in this
+    document.
 
 ## 6. Phase/workstream framing that's still active
 
