@@ -266,6 +266,35 @@ self-reported "done" in a doc with no commit backing it.
     Fix: either rename the field/function to reflect BLAKE2b honestly, or
     switch the implementation to genuine SHA-256 if external
     interoperability with standard tooling (`sha256sum`) is ever needed.
+21. **Guardian's irreversible-action confirmation token can never be set
+    - the variable holding it has function-local scope (found 2026-08-01,
+    source-verified directly)**: `action_engine.c`'s `g_action_apply()`
+    gates irreversible actions (kill, secure delete, kill switch) behind
+    `strcmp(getenv("GUARDIAN_CONFIRM_TOKEN"), g_confirm_token)`, where
+    `g_confirm_token` is declared `static char g_confirm_token[64] = {0};`
+    **inside the function body itself** - a function-local static. In
+    standard C this has function-local visibility even among static
+    functions in the same file; no other function, anywhere, in any file,
+    can ever write to it. Confirmed via `grep -r g_confirm_token` across
+    all of `wlt-defender/src/`: exactly 2 occurrences, both on adjacent
+    lines inside this one function - no setter exists. The comment
+    directly above it describes an architecture that isn't implemented by
+    this code: "The token is set via the API socket by the user (kairos
+    confirm <token>) and stored in a static variable" - that setter was
+    never written. Net effect: the variable is permanently zero-initialized
+    empty. `strcmp(confirm, "")` only succeeds if `GUARDIAN_CONFIRM_TOKEN`
+    is set to an empty string (`export GUARDIAN_CONFIRM_TOKEN=` with
+    nothing after `=`) - a low-probability but real accidental-bypass
+    edge case for a gate protecting SIGKILL/secure-delete/kill-switch
+    actions. In practice this means the intended replacement for the old,
+    already-flagged-insecure `GUARDIAN_AUTOCONFIRM` env var (Bug 25's own
+    fix comment references this) doesn't actually work yet - the only
+    currently-functional path to confirm an irreversible action is the
+    explicitly-labeled-as-legacy `MCP_AUTOCONFIRM` fallback. Fix: give
+    `g_confirm_token` file or global scope, and actually implement the
+    "kairos confirm <token>" API-socket setter the comment describes -
+    until then this gate provides materially less protection than its own
+    documentation claims.
 
 ## 6. Phase/workstream framing that's still active
 
