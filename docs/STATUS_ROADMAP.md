@@ -295,6 +295,31 @@ self-reported "done" in a doc with no commit backing it.
     "kairos confirm <token>" API-socket setter the comment describes -
     until then this gate provides materially less protection than its own
     documentation claims.
+22. **`ransomware_engine.c`'s per-pid tracking table fills up permanently
+    and silently stops detecting new processes (found 2026-08-01,
+    source-verified directly)**: `find_slot()` maintains a fixed 64-entry
+    table (`re->slots[64]`) of PIDs it's tracking deltas for, growing via
+    `re->n++` on every previously-unseen pid - but nothing anywhere in this
+    file ever removes an entry, including for processes that have long
+    since exited. Once 64 *distinct* PIDs have been observed since the
+    daemon started (cumulative over its entire uptime, not concurrent),
+    `find_slot()` returns `-1` for every subsequent new pid, and the only
+    caller (`g_ransomware_check`'s scan loop) does `if (si < 0) continue;`
+    - no log line, no alert, no metric of any kind marking that tracking
+    capacity has been exhausted. On a real desktop OS where the shell
+    spawns a new short-lived process per command, this cap is reachable
+    within hours of uptime, after which bulk-delete/rename-storm/high-
+    write-rate ransomware detection silently stops functioning for every
+    process spawned from that point forward, with nothing anywhere
+    indicating detection coverage has degraded. The delta-based rate
+    calculation itself (this file's own documented "Bug 4 fix," replacing
+    a cumulative-total false-positive problem) is sound and correct on
+    direct read - this is a capacity/eviction bug layered on top of an
+    otherwise-correct detection algorithm. Fix: evict stale slots (check
+    `/proc/<pid>` still exists, or track last-seen time and evict oldest
+    on table-full) rather than growing unbounded-but-capped with no
+    reclamation, and log/alert when the table is full rather than silently
+    dropping coverage.
 
 ## 6. Phase/workstream framing that's still active
 
