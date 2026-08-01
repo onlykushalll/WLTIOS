@@ -221,6 +221,31 @@ self-reported "done" in a doc with no commit backing it.
     forward as an explicit flag and apply it to `app->manifest` before
     `child_setup()` is called - either way, the override has to land on
     the struct that `wlt_sandbox_setup_filesystem()` actually reads.
+19. **`wlt-update/rollback.c`'s `wlt_rollback_load()` reads an
+    uninitialized buffer with `strlen()` on a truncated counter file
+    (found 2026-08-01, source-verified directly)**: `hmac_line` is
+    declared `char hmac_line[HMAC_HEX_LEN + 2];` with no initializer.
+    If the counter file has only one line (e.g. corruption, or a
+    crash mid-write predating the atomic-write fix), the second
+    `fgets(hmac_line, ...)` returns `NULL` and the buffer is never
+    touched - but the code unconditionally proceeds to
+    `strlen(hmac_line)` regardless of whether `fgets` succeeded. This
+    is genuine undefined behavior (reading indeterminate stack memory
+    as a C string). Lower severity than gaps #11/#18 - the likely
+    practical outcomes are a spurious fail-closed rejection (garbage
+    almost certainly won't match a real 64-hex-char HMAC) or a crash,
+    not a silent bypass, since the surrounding logic already fails
+    closed on any HMAC mismatch. Still a real bug worth a one-line
+    fix: check `fgets`'s return value directly (e.g.
+    `if (fgets(...) == NULL) { treat as missing HMAC }`) rather than
+    inferring "line present" via `strlen()` on a possibly-untouched
+    buffer. The rest of this file - the atomic temp+fsync+rename+
+    dir-fsync write in `wlt_rollback_store()`, the monotonic-only
+    `wlt_rollback_check()`/`wlt_rollback_bump()` comparison logic, and
+    the fail-closed HMAC verification - is correct on direct read. The
+    hardcoded build-time HMAC key is a separately, honestly
+    self-documented limitation in the file's own comments (marked as
+    needing KeyVaultPD delivery) - not a new finding.
 
 ## 6. Phase/workstream framing that's still active
 
