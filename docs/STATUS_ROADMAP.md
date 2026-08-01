@@ -246,6 +246,26 @@ self-reported "done" in a doc with no commit backing it.
     hardcoded build-time HMAC key is a separately, honestly
     self-documented limitation in the file's own comments (marked as
     needing KeyVaultPD delivery) - not a new finding.
+20. **`wlt-update/verify.c`'s `wlt_update_compute_sha256()` does not
+    compute SHA-256 - it computes BLAKE2b via libsodium's
+    `crypto_generichash` (found 2026-08-01, source-verified directly,
+    likely low current impact but a real landmine)**: the function name,
+    doc comment ("Compute the SHA-256 of a file"), and its output field
+    (`wlt_UpdateManifest.sha256_hex`) all say SHA-256; the actual call is
+    `crypto_generichash_init/update/final`, which is BLAKE2b by default
+    in libsodium, not SHA-256. Not a weaker hash (BLAKE2b is a legitimate,
+    secure choice) - a naming/labeling mismatch. Checked for live impact:
+    the only caller found is `update.c:655`, and no dedicated external
+    manifest-signing script for `wlt-update` (as opposed to `wlt-pkg`,
+    which is a separate system) was found in `scripts/` - so this is
+    likely self-consistent today (nothing yet compares it against a
+    real, independently-computed SHA-256). The real risk is future: if a
+    release-signing pipeline gets built expecting the field name
+    `sha256_hex` to mean what it says, it will naturally compute real
+    SHA-256 and every legitimately-signed package will fail this check.
+    Fix: either rename the field/function to reflect BLAKE2b honestly, or
+    switch the implementation to genuine SHA-256 if external
+    interoperability with standard tooling (`sha256sum`) is ever needed.
 
 ## 6. Phase/workstream framing that's still active
 
