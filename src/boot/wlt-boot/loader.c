@@ -139,7 +139,7 @@ typedef struct {
 
 /* gEfiSimpleFileSystemProtocolGuid */
 static const EFI_GUID gEfiSimpleFileSystemProtocolGuid = {
-    0x0964E5B22, 0x6459, 0x11D2, {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}
+    0x0964E5B2, 0x6459, 0x11D2, {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}
 };
 
 /* gEfiLoadedImageProtocolGuid */
@@ -423,6 +423,7 @@ wlt_loader_load(const char *path, wlt_kernel_image_t *kernel)
     /* Step 3: Get entry point */
     kernel->entry_point = hdr->e_entry;
     kernel->size = elf_size;
+    kernel->data = elf_data;  /* C.1: store raw data for verification */
 
     /* Step 4: Load PT_LOAD segments */
     uint64_t load_address = 0;
@@ -448,9 +449,38 @@ wlt_loader_load(const char *path, wlt_kernel_image_t *kernel)
             load_address = phdr->p_paddr;
         }
 
-        /* TODO(wlt-boot): Allocate physical memory at p_paddr via UEFI */
-        /* and copy segment data + zero-fill BSS */
-        /* This requires UEFI AllocatePages + memcpy */
+        /* C.1: Real ELF segment loading via UEFI AllocatePages + memcpy.
+         * For each PT_LOAD segment, allocate physical pages at p_paddr,
+         * copy the file data (p_filesz bytes), and zero-fill BSS
+         * (p_memsz - p_filesz bytes). This makes the kernel's code/data
+         * available at the addresses the kernel expects. */
+        if (g_bs != NULL && phdr->p_memsz > 0) {
+            uint64_t pages = (phdr->p_memsz + 4095) / 4096;
+            uint64_t phys = phdr->p_paddr;
+            /* AllocatePages: AllocateAddress = 2, EfiLoaderData = 2 */
+            typedef unsigned long long efi_status_t;
+            efi_status_t (*allocate_pages)(uint32_t, uint32_t, uint64_t, uint64_t *);
+            /* AllocatePages is at offset 24 in EFI_BOOT_SERVICES (after Hdr+RaiseTPL+RestoreTPL) */
+            allocate_pages = *(efi_status_t (**)(uint32_t, uint32_t, uint64_t, uint64_t *))
+                             ((char *)g_bs + 24);
+            efi_status_t st = allocate_pages(2 /* AllocateAddress */, 2 /* EfiLoaderData */, pages, &phys);
+            if (st == 0) {
+                /* Copy file data */
+                uint8_t *dst = (uint8_t *)phys;
+                const uint8_t *src = elf_data + phdr->p_offset;
+                for (uint64_t j = 0; j < phdr->p_filesz; j++)
+                    dst[j] = src[j];
+                /* Zero-fill BSS */
+                for (uint64_t j = phdr->p_filesz; j < phdr->p_memsz; j++)
+                    dst[j] = 0;
+                wlt_console_printf("  Loaded %llu bytes at 0x%llx (BSS=%llu)\n",
+                    (unsigned long long)phdr->p_filesz,
+                    (unsigned long long)phys,
+                    (unsigned long long)(phdr->p_memsz - phdr->p_filesz));
+            } else {
+                wlt_console_error("AllocatePages failed for segment");
+            }
+        }
     }
 
     kernel->load_address = load_address;

@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -60,6 +61,7 @@ typedef struct {
     uint64_t load_address;
     uint64_t entry_point;
     uint64_t size;
+    uint8_t *data;  /* Raw file data (ELF binary or signature) */
 } wlt_kernel_image_t;
 
 typedef struct {

@@ -15,6 +15,7 @@
 #include "loader.h"
 #include "verify.h"
 #include "config.h"
+#include <stdio.h>
 
 /* UEFI system table (set in efi_main) */
 static void *g_system_table = NULL;
@@ -113,7 +114,29 @@ efi_main(void *image_handle, void *system_table)
 
     /* 6. Jump to kernel */
     wlt_console_info("Booting seL4...");
-    /* TODO(wlt-boot): Transfer control to kernel.entry_point */
+    /* C.1: Real UEFI handoff - ExitBootServices + jump to entry_point.
+     * BootServices at offset 96 in SystemTable. ExitBootServices at
+     * offset 208, GetMemoryMap at offset 32 in BootServices. */
+    {
+        void *bs = *(void **)((char *)g_system_table + 96);
+        if (bs) {
+            typedef unsigned long long efi_status_t;
+            efi_status_t (*ebs)(void *, unsigned long long) =
+                *(efi_status_t (**)(void *, unsigned long long))((char *)bs + 208);
+            efi_status_t (*gmm)(unsigned long long *, void *,
+                                 unsigned long long *, unsigned long long *,
+                                 unsigned int *) =
+                *(efi_status_t (**)(unsigned long long *, void *,
+                                    unsigned long long *, unsigned long long *,
+                                    unsigned int *))((char *)bs + 32);
+            uint8_t mb[16384]; unsigned long long sz=sizeof(mb),mk=0,ds=0; unsigned int dv=0;
+            efi_status_t s=0; int a;
+            for (a=0;a<8;a++) { sz=sizeof(mb); s=gmm(&sz,mb,&mk,&ds,&dv); if(s) continue; s=ebs(image_handle,mk); if(!s) break; }
+        }
+    }
+    __asm__ __volatile__("cli");
+    __asm__ __volatile__("cld");
+    { typedef void (*kfn)(void); kfn e=(kfn)(unsigned long long)kernel.entry_point; e(); }
 
     /* Should never reach here */
     wlt_console_error("Kernel returned (should not happen)");
