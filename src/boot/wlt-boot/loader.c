@@ -23,6 +23,7 @@
 #define CHAR16 uint16_t
 #endif
 #include "memory.h"
+#include "efi.h"
 #include "console.h"
 #include <string.h>
 
@@ -85,7 +86,6 @@ typedef struct {
 
 /* ─── UEFI Types (minimal) ──────────────────────────── */
 
-typedef unsigned long long EFI_STATUS;
 typedef void *EFI_HANDLE;
 
 typedef struct {
@@ -129,54 +129,26 @@ typedef struct {
     EFI_STATUS (*Flush)(void *This);
 } EFI_FILE_PROTOCOL;
 
-/* UEFI GUIDs (16 bytes each) */
-typedef struct {
-    uint32_t Data1;
-    uint16_t Data2;
-    uint16_t Data3;
-    uint8_t  Data4[8];
-} EFI_GUID;
+/* EFI_GUID defined in efi.h */
 
 /* gEfiSimpleFileSystemProtocolGuid */
-static const EFI_GUID gEfiSimpleFileSystemProtocolGuid = {
-    0x0964E5B2, 0x6459, 0x11D2, {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}
-};
 
 /* gEfiLoadedImageProtocolGuid */
-static const EFI_GUID gEfiLoadedImageProtocolGuid = {
-    0x5B1B31A1, 0x9562, 0x11D2, {0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}
-};
 
 /* EFI_FILE_INFO GUID */
-static const EFI_GUID gEfiFileInfoGuid = {
-    0x09576E92, 0x6D3F, 0x11D2, {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}
-};
 
-/* UEFI status codes */
-#define EFI_SUCCESS             0
-#define EFI_NOT_FOUND           EFIERR(14)
-#define EFI_BUFFER_TOO_SMALL    EFIERR(5)
-#define EFIERR(x)               (0x8000000000000000ULL | (x))
+/* UEFI status codes defined in efi.h */
 
-/* UEFI boot services (partial — only what we need) */
-typedef struct {
-    void *padding[11];  /* Offset to LocateProtocol */
-    EFI_STATUS (*LocateProtocol)(EFI_GUID *Protocol, void *Registration,
-                                  void **Interface);
-    void *padding2[2];
-    EFI_STATUS (*AllocatePool)(uint32_t PoolType, uint64_t Size, void **Buffer);
-    EFI_STATUS (*FreePool)(void *Buffer);
-} efi_boot_services_t;
+/* A.1: Real UEFI types from vendored efi.h (gnu-efi verified).
+ * Previously used hand-recalled struct layouts with wrong offsets —
+ * LocateProtocol was at offset 88 (should be 320), AllocatePool at
+ * offset 112 (should be 64). Now uses the real EFI_BOOT_SERVICES. */
 
-/* EFI system table (partial) */
-typedef struct {
-    char dummy[56];
-    void *BootServices;
-} efi_system_table_t;
+/* Old shims removed — use EFI_SYSTEM_TABLE / EFI_BOOT_SERVICES from efi.h */
 
 /* Module state */
-static efi_system_table_t *g_st = NULL;
-static efi_boot_services_t *g_bs = NULL;
+static EFI_SYSTEM_TABLE *g_st = NULL;
+static EFI_BOOT_SERVICES *g_bs = NULL;
 
 /* ─── Internal: Convert ASCII path to UEFI CHAR16 ──── */
 
@@ -214,7 +186,7 @@ read_file(const char *path, uint8_t **data_out, size_t *size_out)
         wlt_console_warn("No UEFI boot services available");
         return WLT_BOOT_ERR_IO;
     }
-    g_bs = (efi_boot_services_t *)g_st->BootServices;
+    g_bs = g_st->BootServices;
 
     /* Step 1: Locate SimpleFileSystem protocol */
     status = g_bs->LocateProtocol((EFI_GUID *)&gEfiSimpleFileSystemProtocolGuid,
@@ -500,5 +472,5 @@ wlt_loader_load(const char *path, wlt_kernel_image_t *kernel)
 void
 wlt_loader_set_system_table(void *system_table)
 {
-    g_st = (efi_system_table_t *)system_table;
+    g_st = (EFI_SYSTEM_TABLE *)system_table;
 }

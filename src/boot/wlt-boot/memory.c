@@ -11,6 +11,7 @@
 
 #include "memory.h"
 #include "console.h"
+#include "efi.h"
 #include <string.h>
 
 /* UEFI memory types (from UEFI Specification 2.8) */
@@ -30,30 +31,12 @@
 #define EFI_PAL_CODE                 13
 #define EFI_PERSISTENT_MEMORY        14
 
-/* UEFI memory descriptor structure */
-typedef struct {
-    uint32_t type;
-    uint32_t pad;
-    uint64_t physical_start;
-    uint64_t virtual_start;
-    uint64_t number_of_pages;
-    uint64_t attribute;
-} efi_memory_descriptor_t;
+/* EFI_MEMORY_DESCRIPTOR from efi.h */
 
-/* UEFI Boot Services table (partial — only what we need) */
-typedef struct {
-    /* ... many fields before this ... */
-    void *padding[22];  /* Offset to GetMemoryMap */
-    int64_t (*GetMemoryMap)(uint64_t *MemoryMapSize, void *MemoryMap,
-                            uint64_t *MapKey, uint64_t *DescriptorSize,
-                            uint32_t *DescriptorVersion);
-    void *padding2[1];  /* After GetMemoryMap */
-    int64_t (*AllocatePool)(uint32_t PoolType, uint64_t Size, void **Buffer);
-    int64_t (*FreePool)(void *Buffer);
-} efi_boot_services_t;
+/* A.1: Real EFI_BOOT_SERVICES from vendored efi.h. Old fake struct removed. */
 
 /* Module state */
-static efi_boot_services_t *g_bs = NULL;
+static EFI_BOOT_SERVICES *g_bs = NULL;
 static uint8_t *g_map_buffer = NULL;
 static uint64_t g_map_size = 0;
 static uint64_t g_desc_size = 0;
@@ -93,12 +76,17 @@ wlt_memory_get_map(wlt_memory_map_t *map)
         return WLT_BOOT_ERR_INVALID_ARG;
 
     /* TODO(wlt-boot): Get boot services table from UEFI system table */
-    /* g_bs = g_system_table->BootServices; */
-    /* For now, this is a stub — the actual UEFI call needs the system table */
+    /* A.1: Get boot services via real typed struct (no magic offsets) */
+    if (g_bs == NULL) {
+        extern void *g_system_table;
+        if (g_system_table != NULL) {
+            EFI_SYSTEM_TABLE *st = (EFI_SYSTEM_TABLE *)g_system_table;
+            g_bs = st->BootServices;
+        }
+    }
 
     if (g_bs == NULL)
     {
-        /* No UEFI context — return empty map */
         map->regions = NULL;
         map->region_count = 0;
         map->total_conventional = 0;
@@ -134,7 +122,7 @@ wlt_memory_get_map(wlt_memory_map_t *map)
     }
 
     /* Step 3: Get actual map */
-    int64_t status = g_bs->GetMemoryMap(&map_size, buffer, &map_key,
+    EFI_STATUS status = g_bs->GetMemoryMap(&map_size, buffer, &map_key,
                                          &desc_size, &desc_version);
     if (status != 0)
     {
@@ -155,14 +143,14 @@ wlt_memory_get_map(wlt_memory_map_t *map)
 
     for (uint64_t i = 0; i < count; i++)
     {
-        efi_memory_descriptor_t *desc =
-            (efi_memory_descriptor_t *)((uint8_t *)buffer + i * desc_size);
+        EFI_MEMORY_DESCRIPTOR *desc =
+            (EFI_MEMORY_DESCRIPTOR *)((uint8_t *)buffer + i * desc_size);
 
-        map->regions[map->region_count].address = desc->physical_start;
-        map->regions[map->region_count].size = desc->number_of_pages * 4096;
-        map->regions[map->region_count].type = desc->type;
+        map->regions[map->region_count].address = desc->PhysicalStart;
+        map->regions[map->region_count].size = desc->NumberOfPages * 4096;
+        map->regions[map->region_count].type = desc->Type;
 
-        if (desc->type == EFI_CONVENTIONAL_MEMORY)
+        if (desc->Type == EFI_CONVENTIONAL_MEMORY)
         {
             map->total_conventional += map->regions[map->region_count].size;
         }

@@ -16,9 +16,10 @@
 #include "verify.h"
 #include "config.h"
 #include <stdio.h>
+#include "efi.h"
 
 /* UEFI system table (set in efi_main) */
-static void *g_system_table = NULL;
+void *g_system_table = NULL;
 
 /* Forward declaration — defined in loader.c */
 extern void wlt_loader_set_system_table(void *system_table);
@@ -112,31 +113,94 @@ efi_main(void *image_handle, void *system_table)
         wlt_console_warn("Signature verification DISABLED (debug mode)");
     }
 
-    /* 6. Jump to kernel */
+    /* 6. ExitBootServices + jump to kernel (A.1-A.3: real UEFI handoff)
+     *
+     * A.1: Uses real UEFI typed structs from vendored efi.h (verified
+     *      against gnu-efi via offsetof). No magic byte offsets.
+     * A.2: Memory-map buffer is dynamically allocated via AllocatePool,
+     *      sized to what the firmware reports (not a fixed stack buffer).
+     * A.3: ExitBootServices return value is checked. If it fails after
+     *      8 retries, we HALT — never jump to the kernel with boot
+     *      services still active (undefined behavior).
+     */
     wlt_console_info("Booting seL4...");
-    /* C.1: Real UEFI handoff - ExitBootServices + jump to entry_point.
-     * BootServices at offset 96 in SystemTable. ExitBootServices at
-     * offset 208, GetMemoryMap at offset 32 in BootServices. */
-    {
-        void *bs = *(void **)((char *)g_system_table + 96);
-        if (bs) {
-            typedef unsigned long long efi_status_t;
-            efi_status_t (*ebs)(void *, unsigned long long) =
-                *(efi_status_t (**)(void *, unsigned long long))((char *)bs + 208);
-            efi_status_t (*gmm)(unsigned long long *, void *,
-                                 unsigned long long *, unsigned long long *,
-                                 unsigned int *) =
-                *(efi_status_t (**)(unsigned long long *, void *,
-                                    unsigned long long *, unsigned long long *,
-                                    unsigned int *))((char *)bs + 32);
-            uint8_t mb[16384]; unsigned long long sz=sizeof(mb),mk=0,ds=0; unsigned int dv=0;
-            efi_status_t s=0; int a;
-            for (a=0;a<8;a++) { sz=sizeof(mb); s=gmm(&sz,mb,&mk,&ds,&dv); if(s) continue; s=ebs(image_handle,mk); if(!s) break; }
-        }
+
+    EFI_SYSTEM_TABLE *st = (EFI_SYSTEM_TABLE *)g_system_table;
+    EFI_BOOT_SERVICES *bs = st->BootServices;
+    if (bs == NULL) {
+        wlt_console_error("No BootServices - cannot hand off");
+        return WLT_BOOT_ERR_IO;
     }
+
+    /* A.2: Dynamic memory-map buffer. GetMemoryMap tells us the needed
+     * size; we AllocatePool exactly that much (plus slack for the
+     * allocation itself changing the map). */
+    UINTN map_size = 0;
+    UINTN map_key = 0;
+    UINTN desc_size = 0;
+    UINT32 desc_version = 0;
+    EFI_MEMORY_DESCRIPTOR *map_buf = NULL;
+
+    /* First call: get required size (buffer too small is expected) */
+    bs->GetMemoryMap(&map_size, NULL, &map_key, &desc_size, &desc_version);
+    map_size += desc_size * 4;  /* slack for AllocatePool changing the map */
+
+    EFI_STATUS status = bs->AllocatePool(EFI_LOADER_DATA, map_size, (void **)&map_buf);
+    if (status != EFI_SUCCESS || map_buf == NULL) {
+        wlt_console_error("Failed to allocate memory-map buffer");
+        return WLT_BOOT_ERR_NOMEM;
+    }
+
+    /* A.3: ExitBootServices retry loop (UEFI spec 7.2). The map key
+     * becomes stale if memory changes between GetMemoryMap and
+     * ExitBootServices. Must retry until success. */
+    EFI_STATUS ebs_status = (EFI_STATUS)0xFFFFFFFF;  /* sentinel: not-succeeded */
+    int attempt;
+    for (attempt = 0; attempt < 8; attempt++) {
+        UINTN sz = map_size;
+        status = bs->GetMemoryMap(&sz, map_buf, &map_key, &desc_size, &desc_version);
+        if (status != EFI_SUCCESS) {
+            wlt_console_warn("GetMemoryMap retry needed");
+            continue;
+        }
+        ebs_status = bs->ExitBootServices(image_handle, map_key);
+        if (ebs_status == EFI_SUCCESS) {
+            wlt_console_info("ExitBootServices succeeded");
+            break;
+        }
+        /* EFI_INVALID_PARAMETER = map key stale. Retry. */
+        wlt_console_warn("ExitBootServices retry (map key stale)");
+    }
+
+    /* A.3: CRITICAL — check success before jumping. If ExitBootServices
+     * never succeeded, boot services are still active. Jumping to the
+     * kernel in this state is undefined/catastrophic. Halt instead. */
+    if (ebs_status != EFI_SUCCESS) {
+        wlt_console_error("ExitBootServices FAILED after 8 retries");
+        wlt_console_error("Refusing to jump - boot services still active");
+        /* Halt: do NOT jump to kernel with firmware still active. */
+        __asm__ __volatile__("cli");
+        for (;;) {
+            __asm__ __volatile__("hlt");
+        }
+        return WLT_BOOT_ERR_IO;  /* unreachable, but keeps compiler happy */
+    }
+
+    /* Post-ExitBootServices: only RuntimeServices valid. No more ConOut
+     * (belongs to BootServices). Clean CPU state + jump to kernel. */
     __asm__ __volatile__("cli");
     __asm__ __volatile__("cld");
-    { typedef void (*kfn)(void); kfn e=(kfn)(unsigned long long)kernel.entry_point; e(); }
+
+    /* Jump to kernel.entry_point. ELF segments were loaded at their
+     * p_paddr by loader.c. A direct rip-transfer is correct for a
+     * flat 64-bit seL4-style entry. */
+    typedef void (*kernel_entry_fn)(void);
+    kernel_entry_fn entry = (kernel_entry_fn)(uintptr_t)kernel.entry_point;
+    entry();  /* does not return */
+
+    /* Should never reach here */
+    wlt_console_error("Kernel returned (should not happen)");
+    return WLT_BOOT_ERR_IO;
 
     /* Should never reach here */
     wlt_console_error("Kernel returned (should not happen)");
