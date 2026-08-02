@@ -361,6 +361,41 @@ self-reported "done" in a doc with no commit backing it.
     DESTINATION") is loaded into memory and then never used. Same
     build-but-not-wired pattern as gaps #10, #16, #17 earlier in this
     document.
+25. **`92fe3cc`'s UEFI handoff (bootloader Section C) has two real issues,
+    one high-confidence, one flagged with appropriate hedging (found
+    2026-08-02, source-verified directly)**: `boot.c`'s new handoff code
+    calls `ExitBootServices` via a retry loop, then unconditionally jumps
+    to `kernel.entry_point` right after. (1) **High confidence**: there is
+    no check of the loop's final status before jumping - the loop does
+    `if(!s) break;` on success, but falls through after 8 failed attempts
+    with no subsequent check of `s`. If `ExitBootServices` never succeeds
+    (a real UEFI-spec behavior when the memory-map key is stale, which is
+    the likely outcome of issue below), boot services remain active when
+    the kernel starts - undefined/catastrophic for any real OS kernel
+    that assumes firmware has handed off control. Compounding this: the
+    memory-map buffer is fixed at 16KB with no growth path - if
+    `GetMemoryMap` returns "buffer too small" (realistic on systems with
+    many memory regions), the loop retries the same undersized buffer up
+    to 8 times rather than allocating the size the firmware actually
+    reported needing, then proceeds regardless. (2) **Flagged, not
+    asserted with full confidence**: `BootServices`/`ExitBootServices`/
+    `GetMemoryMap` are accessed via hardcoded raw byte offsets
+    (`+96`/`+208`/`+32`) into the system/boot-services tables instead of
+    real typed struct definitions (e.g. from `gnu-efi`'s `<efi.h>`).
+    Offset 96 for `BootServices` within `EFI_SYSTEM_TABLE` checks out
+    against the standard UEFI x86_64 layout on manual recount. The other
+    two offsets are less certain from memory alone and may not match the
+    real `EFI_BOOT_SERVICES` layout - this needs verification against the
+    actual UEFI spec or `gnu-efi` headers, not taken on faith either way.
+    Independent of whether these specific numbers are right, hardcoding
+    raw offsets into a firmware ABI struct instead of using real struct
+    definitions is inherently fragile and effectively unverifiable by
+    inspection - recommend switching to typed definitions regardless of
+    how the offset check-out resolves. Note: build succeeding (`wlt-boot.
+    efi`, 66864 bytes) only confirms the code compiles and links - it has
+    not been boot-tested against real or emulated UEFI firmware, so
+    neither of these issues would have been caught by the build step
+    alone.
 
 ## 6. Phase/workstream framing that's still active
 
