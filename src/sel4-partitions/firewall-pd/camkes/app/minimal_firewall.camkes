@@ -1,0 +1,66 @@
+/*
+ * minimal_firewall.camkes — Minimal VM + Firewall PD
+ *
+ * B.2: Proves the Firewall PD pattern works with camkes IPC.
+ * The Firewall PD is a bare seL4 protection domain (like KeyVaultPD),
+ * NOT a Linux guest VM (unlike TorPD).
+ *
+ * The Linux VM and Firewall PD communicate via shared memory + notifications.
+ * The VM sends "PING" and the PD responds "PONG" — proving the IPC path.
+ */
+import <VM/vm.camkes>;
+
+#include <configurations/vm.h>
+
+#define VM_GUEST_CMDLINE "earlyprintk=ttyS0,115200 console=ttyS0,115200 i8042.nokbd=y i8042.nomux=y \
+i8042.noaux=y io_delay=udelay noisapnp pci=nomsi debug root=/dev/mem clocksource=tsc hpet=disable"
+
+import <FirewallPD/FirewallPD.camkes>;
+
+component Init0 {
+    dataport Buf(4096) fw_src_dp;
+    dataport Buf(4096) fw_dest_dp;
+    emits Ready fw_ready;
+    consumes Done fw_done;
+    VM_INIT_DEF()
+}
+
+assembly {
+    composition {
+        VM_COMPOSITION_DEF()
+        VM_PER_VM_COMP_DEF(0)
+
+        /* Firewall protection domain — separate from the Linux VM */
+        component FirewallPD firewall;
+
+        /* Shared memory connections */
+        connection seL4SharedDataWithCaps fw_conn_src(from vm0.fw_src_dp,
+                                                       to firewall.src_dp);
+        connection seL4SharedDataWithCaps fw_conn_dest(from firewall.dest_dp,
+                                                         to vm0.fw_dest_dp);
+
+        /* Notification connections */
+        connection seL4Notification fw_ready_conn(from vm0.fw_ready,
+                                                   to firewall.ready);
+        connection seL4Notification fw_done_conn(from firewall.done,
+                                                  to vm0.fw_done);
+
+        /* Serial output for the FirewallPD */
+        connection seL4RPCCall fw_putchar(from firewall.putchar,
+                                           to serial.processed_putchar);
+    }
+
+    configuration {
+        VM_CONFIGURATION_DEF()
+        VM_PER_VM_CONFIG_DEF(0)
+
+        vm0.simple_untyped23_pool = 20;
+        vm0.simple_untyped25_pool = 2;
+        vm0.guest_ram = 0x10000000;
+        vm0.guest_ram_mb = 128;
+        vm0.kernel_cmdline = VM_GUEST_CMDLINE;
+        vm0.kernel_image = "bzimage";
+        vm0.kernel_relocs = "bzimage";
+        vm0.initrd_image = "rootfs.cpio";
+    }
+}

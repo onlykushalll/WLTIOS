@@ -1,0 +1,22 @@
+/*
+ * FirewallPD.camkes — CAmkES component declaration for Firewall PD
+ *
+ * B.1 Decision: Bare seL4 protection domain (NOT a Linux guest VM).
+ * This follows the KeyVaultPD pattern, not the TorPD pattern.
+ *
+ * The spec (docs/specs/firewall-pd_ARCHIVED) calls for Microkit/sDDF,
+ * but this project uses camkes. This component adapts the spec's
+ * intent to the project's camkes framework: a minimal bare PD with
+ * shared-memory IPC + notification-based synchronization.
+ *
+ * The PD enforces the "Tor-only" rule: all network traffic must go
+ * through Tor. Direct traffic is dropped. Kill switch drops all.
+ */
+component FirewallPD {
+    control;
+    consumes Ready ready;       /* VM signals: packet available */
+    emits Done done;            /* PD signals: packet processed */
+    dataport Buf(4096) src_dp;  /* VM -> PD: packet data + commands */
+    dataport Buf(4096) dest_dp; /* PD -> VM: response + status */
+    maybe uses PutChar putchar; /* Serial debug output */
+}
