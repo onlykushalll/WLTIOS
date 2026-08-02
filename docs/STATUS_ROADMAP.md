@@ -396,6 +396,20 @@ self-reported "done" in a doc with no commit backing it.
     not been boot-tested against real or emulated UEFI firmware, so
     neither of these issues would have been caught by the build step
     alone.
+26. **Firewall PD's real source files (`d7f68e7`) exist and are honestly
+    scoped, but aren't in the tracked repo - reproducibility gap, not a
+    content problem (found 2026-08-02, verified by reading the actual
+    file on disk)**: `firewall_pd.c` genuinely exists at `sel4-build/
+    projects/vm/components/FirewallPD/src/` and matches its description
+    - real ping/pong IPC, real kill-switch state, packet filtering
+    honestly scoped as prefix-matching for the IPC-proof stage rather
+    than overclaiming real IP/TCP/UDP parsing. But the commit itself only
+    contains two shell scripts (`create_firewall_pd.sh`/`sync_fw.sh`) -
+    the actual `.camkes`/`.c`/`CMakeLists.txt` files live only in the
+    gitignored `sel4-build/` tree. Same pattern as TorPD's very first
+    scaffold attempt early in this project. Not a security issue, but a
+    real reproducibility one: delete `sel4-build/` and this doesn't come
+    back without re-running the generator script by hand.
 
 ## 6. Phase/workstream framing that's still active
 
