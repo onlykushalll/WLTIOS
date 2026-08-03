@@ -197,7 +197,15 @@ static bool field_match(const char *field, const char *op, const char *val, cons
             while (*e && *e != ',' && *e != ')') e++;
             size_t L = e - s;
             if (L && strlen(fv) == L && !strncmp(fv, s, L)) return true;
-            s = *e == ',' ? e+1 : (*e == ')' ? e+1 : e);
+            /* [fix] if e hit end-of-string without finding ',' or ')'
+             * (a malformed rule missing its closing paren), the old
+             * code left s unchanged here and the outer while(*s) loop
+             * spun forever - one bad rule in guardian.rules hung this
+             * function on every subsequent event evaluation, not just
+             * once at load time. Treat an unterminated list as a
+             * parse failure instead of looping. */
+            if (*e != ',' && *e != ')') break;
+            s = e + 1;
             while (*s == ' ') s++;
         }
         return false;

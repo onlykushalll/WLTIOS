@@ -88,7 +88,11 @@ wlt_rollback_load(uint64_t *out_counter)
     }
 
     uint64_t counter = 0;
-    char hmac_line[HMAC_HEX_LEN + 2];  /* hex + newline + nul */
+    char hmac_line[HMAC_HEX_LEN + 2] = {0};  /* hex + newline + nul;
+        [fix] zero-initialized - if fgets() below fails (e.g. a
+        truncated counter file with only one line), this stays a
+        defined empty string instead of leaving strlen() below to
+        read indeterminate stack memory as a C string. */
     char line[128];
 
     if (fgets(line, sizeof(line), fp) != NULL) {
