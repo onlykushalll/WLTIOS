@@ -350,12 +350,21 @@ int g_anomaly_check_proc(g_anomaly_engine_t *ae, pid_t pid, g_event_t *out) {
             g_bus_publish(out);
             return 1;
         }
-    } else {
-        g_strlcpy(out->rule_id, "ANOMALY_MODEL_UNAVAILABLE", sizeof(out->rule_id));
-        out->verdict = G_VERDICT_UNKNOWN;
+        /* [fix] Genuinely checked and clean - only set CLEAN here, in
+         * the branch that actually ran a real check. The old code set
+         * this unconditionally after the if/else below, which meant a
+         * completely failed model call (see the else branch) had its
+         * correctly-set G_VERDICT_UNKNOWN silently overwritten back to
+         * G_VERDICT_CLEAN a few lines later - a broken/missing
+         * anomaly detector reported the same result as a successfully
+         * verified-clean process, with no way for a caller to tell
+         * the difference. */
+        out->verdict = G_VERDICT_CLEAN;
+        return 0;
     }
-    out->verdict = G_VERDICT_CLEAN;
-    return 0;
+    g_strlcpy(out->rule_id, "ANOMALY_MODEL_UNAVAILABLE", sizeof(out->rule_id));
+    out->verdict = G_VERDICT_UNKNOWN;
+    return -1;
 }
 
 int g_anomaly_check_system(g_anomaly_engine_t *ae, g_event_t *out) {

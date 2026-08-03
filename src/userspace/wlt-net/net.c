@@ -296,10 +296,18 @@ wlt_net_shutdown(wlt_net_state_t *state)
     (void)wlt_wifi_disconnect(state);
     (void)wlt_wifi_cleanup(state);
     (void)wlt_tor_proxy_cleanup(state);
-    /* Re-apply fail-closed rules so we never leave the box open. */
+    /* Re-apply fail-closed rules so we never leave the box open.
+     * [fix] Previously this block called wlt_kill_switch_cleanup()
+     * immediately after apply_block(), which either deletes the
+     * nftables table outright or sets iptables policies back to
+     * ACCEPT - undoing the block on the very next line, directly
+     * against this comment's own intent. On a Tor-by-default OS,
+     * every shutdown/restart was leaving a window with zero firewall
+     * enforcement right before the daemon exits. Do not clean up the
+     * block on shutdown - leave the box blocked until the next
+     * explicit start re-establishes real connectivity. */
     if (state->kill_switch_enabled)
         (void)wlt_kill_switch_apply_block(state);
-    (void)wlt_kill_switch_cleanup(state);
     return WLT_NET_OK;
 }
 
