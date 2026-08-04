@@ -104,17 +104,24 @@ static wlt_settings_err_t wlt_network_register(wlt_settings_t *s)
     if ((r = reg_bool(s, "network.ethernet.enabled", "Enable Ethernet", true,
                       WLT_FLAG_PERSIST)) != WLT_SETTINGS_OK) return r;
 
-    /* Tor transport */
+    /* Tor transport
+     * [fix] default was false, contradicting this project's own
+     * stated P0 requirement that all traffic routes through Tor by
+     * default. A fresh install with no persisted config previously
+     * had Tor off by default in this schema. */
     if ((r = reg_bool(s, "network.tor.enabled", "Route traffic through Tor",
-                      false, WLT_FLAG_PERSIST)) != WLT_SETTINGS_OK) return r;
+                      true, WLT_FLAG_PERSIST)) != WLT_SETTINGS_OK) return r;
     if ((r = reg_int(s, "network.tor.socks_port", "Tor SOCKS5 port", 9050,
                      1024, 65535, WLT_FLAG_PERSIST)) != WLT_SETTINGS_OK) return r;
     if ((r = reg_int(s, "network.tor.control_port", "Tor control port", 9051,
                      1024, 65535, WLT_FLAG_PERSIST)) != WLT_SETTINGS_OK) return r;
 
-    /* Kill switch (privileged) */
+    /* Kill switch (privileged)
+     * [fix] default was false here, inconsistent with wlt-net's own
+     * actual runtime default (kill_switch_enabled = true in
+     * config.c's fail-closed defaults). */
     if ((r = reg_bool(s, "network.kill_switch.enabled",
-                      "Block all non-Tor traffic", false,
+                      "Block all non-Tor traffic", true,
                       WLT_FLAG_PERSIST | WLT_FLAG_REQUIRES_AUTH)) != WLT_SETTINGS_OK) return r;
     if ((r = reg_enum(s, "network.kill_switch.mode", "Kill switch mode",
                       "off", k_killswitch_modes,
