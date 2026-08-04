@@ -15,6 +15,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/stat.h>
+/* HMAC-SHA256 hex length: always defined (used by wlt_rollback_load
+ * for buffer sizing even when sodium is not compiled in). */
+#define HMAC_HEX_LEN 64
 
 #ifdef HAVE_SODIUM
 #include <sodium.h>
