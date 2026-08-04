@@ -344,6 +344,17 @@ wlt_wifi_connect(wlt_net_state_t *state,
         return WLT_NET_ERR_INVALID_ARG;
     if (state->wpa_ctrl_fd < 0)
         return WLT_NET_ERR_NOT_FOUND;
+    /* [fix] ssid/psk get embedded unescaped into a quoted
+     * wpa_supplicant SET_NETWORK control command below. WPA-PSK
+     * passwords and SSIDs can legitimately contain '"'. Rather than
+     * hand-rolling escaping that has to exactly match wpa_supplicant's
+     * own parser (risky to get right without a live reference), reject
+     * any value containing a quote outright - fail closed on
+     * ambiguous input, same as the rest of this codebase does. */
+    if (strchr(ssid, '"') != NULL)
+        return WLT_NET_ERR_INVALID_ARG;
+    if (psk != NULL && strchr(psk, '"') != NULL)
+        return WLT_NET_ERR_INVALID_ARG;
 
     /* Randomize MAC before each connect (privacy). */
     if (state->mac_mode == WLT_NET_MAC_ALWAYS)
