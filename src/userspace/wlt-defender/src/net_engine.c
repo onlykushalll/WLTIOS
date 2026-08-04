@@ -138,14 +138,32 @@ static int check_proto_uid(g_net_engine_t *ne, const char *proto_file, g_event_t
     (void)fgets(line, sizeof(line), f);  /* header */
     int found = 0;
     while (fgets(line, sizeof(line), f)) {
-        /* /proc/net/tcp format: sl local rem st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode */
+        /* /proc/net/tcp format: sl local rem st tx_queue:rx_queue
+         * tr:tm->when retrnsmt uid timeout inode
+         *
+         * [fix] The kernel emits tx_queue:rx_queue and tr:tm->when as
+         * ONE colon-joined token each (e.g. "00000000:00000000"), not
+         * as independent space-separated numbers - confirmed against
+         * the kernel's own tcp4_seq_show format ("%08X:%08X" and
+         * "%02X:%08lX"). The previous format string used 4 separate
+         * %lu conversions for these two tokens: the first %lu would
+         * read up to the internal colon and stop, then the next %lu
+         * would immediately fail (it only skips whitespace, not a
+         * colon) - so sscanf returned early with n=4 on every line,
+         * under the "if (n < 8) continue" threshold, meaning this
+         * parser silently skipped every single line, on every call,
+         * and g_net_check_leak() could never detect anything.
+         *
+         * Fix: local/remote/state were already read as strings
+         * (correctly, since they're colon-joined hex:hex tokens
+         * too) - do the same for the two queue/timer fields, and
+         * skip retrnsmt as a suppressed hex read. Only uid is
+         * actually used below; nothing else needs a named variable. */
         char local[64], remote[64], state[16];
-        unsigned long tx_q, rx_q, tr, tm, retr;
-        unsigned int uid, timeout;
-        unsigned long long inode;
-        int n = sscanf(line, "%*d: %63s %63s %15s %lu %lu %lu %lu %u %u %llu",
-                       local, remote, state, &tx_q, &rx_q, &tr, &tm, &uid, &timeout, &inode);
-        if (n < 8) continue;
+        unsigned int uid;
+        int n = sscanf(line, "%*d: %63s %63s %15s %*s %*s %*x %u",
+                       local, remote, state, &uid);
+        if (n < 4) continue;
         if (!strcmp(state, "0A")) continue;  /* LISTEN — ok */
 
         /* parse remote address to check if it's localhost */
