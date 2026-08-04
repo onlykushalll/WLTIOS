@@ -245,7 +245,20 @@ int g_log_append(g_log_t *log, const g_event_t *ev) {
     char prev_hex[65];
     g_sha256_hex(log->prev_hash, 32, prev_hex);
 
-    /* build JSON (the plaintext) */
+    /* build JSON (the plaintext)
+     * [fix] escape user-controlled fields before embedding, same as
+     * the overflow spillover path a few dozen lines above already
+     * does (its own "C4 fix" comment). This path was missed - a
+     * filename or event detail containing a literal '"' would
+     * produce malformed JSON in the actual primary encrypted log.
+     * This does not affect the hash-chain's tamper-evidence (the
+     * chain hashes the raw bytes regardless of JSON validity), but
+     * it does affect whether the log stays parseable for later
+     * forensic review. */
+    char esc_comm[128], esc_path[G_PATH_MAX * 2], esc_detail[512];
+    escape_json_field(ev->comm, esc_comm, sizeof(esc_comm));
+    escape_json_field(ev->path, esc_path, sizeof(esc_path));
+    escape_json_field(ev->detail, esc_detail, sizeof(esc_detail));
     char json[G_LOG_MAX_REC];
     int jlen = snprintf(json, sizeof(json),
         "{\"seq\":%llu,\"ts\":\"%s\",\"pid\":%u,\"ppid\":%u,\"uid\":%u,"
@@ -253,8 +266,8 @@ int g_log_append(g_log_t *log, const g_event_t *ev) {
         "\"verdict\":%d,\"action\":%d,\"path\":\"%s\",\"detail\":\"%s\","
         "\"prev_hash\":\"%s\"}",
         (unsigned long long)log->seq, ts, ev->pid, ev->ppid, ev->uid,
-        ev->comm, ev->source, ev->rule_id, ev->severity, ev->verdict,
-        ev->action_taken, ev->path, ev->detail, prev_hex);
+        esc_comm, ev->source, ev->rule_id, ev->severity, ev->verdict,
+        ev->action_taken, esc_path, esc_detail, prev_hex);
 
     if (jlen < 0 || jlen >= (int)sizeof(json)) {
         pthread_mutex_unlock(&log->lock);
