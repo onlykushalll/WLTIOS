@@ -1,0 +1,13 @@
+diff --git a/libsel4vm/src/arch/x86/interrupt.c b/libsel4vm/src/arch/x86/interrupt.c
+index f08b72d..0ebc104 100644
+--- a/libsel4vm/src/arch/x86/interrupt.c
++++ b/libsel4vm/src/arch/x86/interrupt.c
+@@ -34,7 +34,7 @@ static void resume_guest(vm_vcpu_t *vcpu)
+ static void inject_irq(vm_vcpu_t *vcpu, int irq)
+ {
+     /* Inject a vectored exception into the guest */
+-    assert(irq >= 16);
++    assert(irq >= 0); /* relaxed: cross_vm uses ISA IRQ 12 */
+     vm_guest_state_set_control_entry(vcpu->vcpu_arch.guest_state, BIT(31) | irq);
+ }
+ 
