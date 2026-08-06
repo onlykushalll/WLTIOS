@@ -275,8 +275,14 @@ wlt_pkg_install(const char *name)
             wlt_pkg_error_t dl_err = wlt_pkg_download(download_url, pkg_path);
             if (dl_err == WLT_PKG_OK && access(pkg_path, R_OK) == 0)
             {
-                printf("[wlt-pkg] Downloaded %s (%ld bytes)\n", name,
-                       (long)ftell(fopen(pkg_path, "r")));
+                /* [fix] previously: (long)ftell(fopen(pkg_path, "r")) -
+                 * leaked the FILE* (never fclose'd) and always printed
+                 * 0 bytes since ftell() on a freshly-opened file at
+                 * position 0 returns 0, not the file size. Use stat()
+                 * for the real size with no open handle to leak. */
+                struct stat st;
+                long sz = (stat(pkg_path, &st) == 0) ? (long)st.st_size : -1;
+                printf("[wlt-pkg] Downloaded %s (%ld bytes)\n", name, sz);
                 /* Fall through to extraction below */
             }
             else
@@ -411,7 +417,15 @@ wlt_pkg_remove(const char *name)
             while ((entry = readdir(d)) != NULL)
             {
                 char link_path[512];
-                snprintf(link_path, sizeof(link_path), "/usr/bin/%s", entry->d_name);
+                /* [fix] was hardcoded "/usr/bin/%s" while the opendir()
+                 * just above correctly uses bin_dir() (which respects
+                 * the WLT_PKG_BIN_DIR test override) - meaning this
+                 * enumerated the right directory but then tried to
+                 * unlink at the wrong path whenever the override was
+                 * set to anything other than /usr/bin, silently
+                 * failing to clean up symlinks in exactly the test
+                 * environment this project's own harness uses. */
+                snprintf(link_path, sizeof(link_path), "%s/%s", bin_dir(), entry->d_name);
 
                 char target[512];
                 ssize_t len = readlink(link_path, target, sizeof(target) - 1);
