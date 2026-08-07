@@ -163,6 +163,8 @@ static struct wl_display *display;
 static struct wl_compositor *compositor;
 static struct wl_shm *shm;
 static struct xdg_wm_base *xdg_wm_base;
+static struct wl_seat *seat;
+static struct wl_keyboard *keyboard;
 static struct wl_surface *surface;
 static struct xdg_surface *xdg_surface;
 static struct xdg_toplevel *xdg_toplevel;
@@ -171,6 +173,7 @@ static uint32_t *shm_pixels;
 static volatile sig_atomic_t running = 1;
 static int configured = 0;
 static int needs_redraw = 1;
+static void spawn_app(int idx); /* forward decl - kb_key calls this before its definition */
 
 static void on_sig(int s) { (void)s; running = 0; }
 
@@ -180,6 +183,7 @@ static void registry_global(void *d, struct wl_registry *r, uint32_t n,
     if (!strcmp(iface, "wl_compositor")) compositor = wl_registry_bind(r, n, &wl_compositor_interface, 1);
     else if (!strcmp(iface, "wl_shm")) shm = wl_registry_bind(r, n, &wl_shm_interface, 1);
     else if (!strcmp(iface, "xdg_wm_base")) xdg_wm_base = wl_registry_bind(r, n, &xdg_wm_base_interface, 1);
+    else if (!strcmp(iface, "wl_seat")) seat = wl_registry_bind(r, n, &wl_seat_interface, 1);
 }
 static void registry_remove(void *d, struct wl_registry *r, uint32_t n) {(void)d;(void)r;(void)n;}
 static const struct wl_registry_listener reg_l = {.global=registry_global,.global_remove=registry_remove};
@@ -197,6 +201,50 @@ static void xt_conf(void *d, struct xdg_toplevel *t, int32_t w, int32_t h, struc
 }
 static void xt_close(void *d, struct xdg_toplevel *t) {(void)d;(void)t; running=0;}
 static const struct xdg_toplevel_listener xt_l = {.configure=xt_conf,.close=xt_close};
+
+/* [fix] Keyboard handling (wl_keyboard listener) — without this, the
+ * launcher rendered a static frame claiming "Enter=Launch Esc=Close"
+ * in its own footer text, but `selected` never changed and
+ * spawn_app() was dead code — no keypress did anything. Same real
+ * wl_seat/wl_keyboard pattern already proven working in
+ * kairos_window.c, reused here rather than inventing a new one. */
+static void kb_keymap(void*d,struct wl_keyboard*k,uint32_t f,int32_t fd,uint32_t s){
+    (void)d;(void)k;(void)f;(void)s; close(fd); /* no xkb - raw keycodes */
+}
+static void kb_enter(void*d,struct wl_keyboard*k,uint32_t s,struct wl_surface*sf,struct wl_array*keys){(void)d;(void)k;(void)s;(void)sf;(void)keys;}
+static void kb_leave(void*d,struct wl_keyboard*k,uint32_t s,struct wl_surface*sf){(void)d;(void)k;(void)s;(void)sf;}
+static void kb_mod(void*d,struct wl_keyboard*k,uint32_t s,uint32_t dp,uint32_t l,uint32_t g,uint32_t lg){(void)d;(void)k;(void)s;(void)dp;(void)l;(void)g;(void)lg;}
+static void kb_rep(void*d,struct wl_keyboard*k,int32_t r,int32_t dly){(void)d;(void)k;(void)r;(void)dly;}
+
+static void kb_key(void*d,struct wl_keyboard*k,uint32_t serial,
+                   uint32_t time,uint32_t key,uint32_t state){
+    (void)d;(void)k;(void)serial;(void)time;
+    if(state!=WL_KEYBOARD_KEY_STATE_PRESSED) return;
+    if(key==103){ /* Up */
+        if(selected>0) selected--;
+        needs_redraw=1;
+    } else if(key==108){ /* Down */
+        if(selected<app_count-1) selected++;
+        needs_redraw=1;
+    } else if(key==28){ /* Enter */
+        spawn_app(selected);
+    } else if(key==1){ /* Escape */
+        running=0;
+    }
+}
+static const struct wl_keyboard_listener kbl={
+    .keymap=kb_keymap,.enter=kb_enter,.leave=kb_leave,
+    .key=kb_key,.modifiers=kb_mod,.repeat_info=kb_rep
+};
+static void seat_caps(void*d,struct wl_seat*s,uint32_t caps){
+    (void)d;
+    if((caps&WL_SEAT_CAPABILITY_KEYBOARD)&&!keyboard){
+        keyboard=wl_seat_get_keyboard(s);
+        wl_keyboard_add_listener(keyboard,&kbl,NULL);
+    }
+}
+static void seat_name(void*d,struct wl_seat*s,const char*n){(void)d;(void)s;(void)n;}
+static const struct wl_seat_listener seatl={.capabilities=seat_caps,.name=seat_name};
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  SHM BUFFER + RENDERING
@@ -307,6 +355,10 @@ int main(void) {
     wl_display_roundtrip(display);
     if (!compositor || !shm || !xdg_wm_base) { fprintf(stderr, "[launcher] FATAL: missing globals\n"); return 1; }
     xdg_wm_base_add_listener(xdg_wm_base, &xwm_l, NULL);
+    if (seat) {
+        wl_seat_add_listener(seat, &seatl, NULL);
+        wl_display_roundtrip(display);
+    }
 
     if (create_shm_buffer() < 0) { fprintf(stderr, "[launcher] FATAL: no buffer\n"); return 1; }
 
