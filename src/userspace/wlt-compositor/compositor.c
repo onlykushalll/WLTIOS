@@ -396,7 +396,15 @@ static void pointer_handle_motion(struct wl_listener *listener, void *data) {
     /* Update pointer focus */
     wlt_view_t *view = view_at(g_cursor->x, g_cursor->y);
     struct wlr_surface *surface = NULL;
-    double sx, sy;
+    /* [fix] sx/sy were uninitialized and only written inside the
+     * `if (view)` branch below, but wlr_seat_pointer_notify_motion()
+     * at the end of this function used them unconditionally - every
+     * pointer motion over empty desktop (view == NULL, an extremely
+     * common case) or over a view with no surface at that exact point
+     * read indeterminate stack memory. Zero-initialize so the no-
+     * surface path passes real, defined coordinates instead of
+     * garbage. */
+    double sx = 0.0, sy = 0.0;
     if (view) {
         surface = wlr_xdg_surface_surface_at(view->xdg_surface,
                     g_cursor->x - view->x, g_cursor->y - view->y, &sx, &sy);
