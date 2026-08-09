@@ -4,6 +4,7 @@
 #include <sel4vmmplatsupport/drivers/cross_vm_connection.h>
 #include <sel4vmmplatsupport/drivers/pci_helper.h>
 #include <crossvm.h>
+#include <stdio.h>
 
 extern dataport_caps_handle_t tor_src_dp_handle;
 extern dataport_caps_handle_t tor_dest_dp_handle;
@@ -19,24 +20,27 @@ static struct camkes_crossvm_connection connections[] = {
  * pci_config_read/write RPC (which hits the host's 0xCF8/0xCFC config space)
  * with NO offset checks and NO BAR interception of any kind.
  *
- * Rationale: the previous v10 boot (pure passthrough) successfully let the
- * guest's PCI scan discover the pcnet (AMD Am79C970A, PCI 1022:2000) at
- * 0000:00:01.0. The later-added BAR1 interception (returning 0 for offset
- * 0x14 reads, dropping offset 0x14 writes) broke the entire PCI config space
- * read path -- the guest's scan found NO devices. Reverting to pure
- * passthrough restores PCI enumeration.
+ * SIGNATURE NOTE: These wrappers match the EXACT vmm_pci_config_t signature
+ * from pci.h:31-39:
+ *   uint8_t  (*ioread8)(void *cookie, vmm_pci_address_t addr, unsigned int offset);
+ *   uint16_t (*ioread16)(void *cookie, vmm_pci_address_t addr, unsigned int offset);
+ *   uint32_t (*ioread32)(void *cookie, vmm_pci_address_t addr, unsigned int offset);
+ *   void (*iowrite8)(void *cookie, vmm_pci_address_t addr, unsigned int offset, uint8_t val);
+ *   void (*iowrite16)(void *cookie, vmm_pci_address_t addr, unsigned int offset, uint16_t val);
+ *   void (*iowrite32)(void *cookie, vmm_pci_address_t addr, unsigned int offset, uint32_t val);
+ *
+ * This is identical to the pattern used by main.c's camkes_pci_read8/16/32
+ * and camkes_pci_write8/16/32. The vmm_pci_entry_t.ioread/iowrite (which use
+ * int return + uint32_t* result) are a DIFFERENT interface, internally
+ * bridged by passthrough_pci_config_ioread/iowrite in pci_helper.c:107-143
+ * which call these ioread8/16/32 callbacks and assign the return value.
  *
  * The pcnet NIC is I/O-PORT-ONLY from the driver's perspective:
  *   - BAR0 (offset 0x10): I/O ports 0xc000-0xc01f (bit0=1). The pcnet32
  *     driver talks to the NIC exclusively through these I/O ports, which are
  *     granted to the guest via the camkes vm_ioports grant (0xc000-0xc020).
- *     The DSDT now exposes an I/O window (0xC000-0xCFFF) on the PCI host
- *     bridge, so the guest's PCI core can claim BAR0.
  *   - BAR1 (offset 0x14): 32-byte MMIO aperture at 0xfeb91000. The pcnet32
- *     driver PROBES this but does not use it for traffic. With pure
- *     passthrough the guest may fail to claim BAR1 (MMIO window exhaustion),
- *     but the pcnet32 driver continues to bind using BAR0 alone. This is
- *     acceptable -- the previous v10 boot worked this way.
+ *     driver PROBES this but does not use it for traffic.
  */
 static uint8_t pcnet_cfg_read8(void *cookie, vmm_pci_address_t addr, unsigned int offset) {
     return pci_config_read8(addr.bus, addr.dev, addr.fun, offset);
@@ -45,7 +49,9 @@ static uint16_t pcnet_cfg_read16(void *cookie, vmm_pci_address_t addr, unsigned 
     return pci_config_read16(addr.bus, addr.dev, addr.fun, offset);
 }
 static uint32_t pcnet_cfg_read32(void *cookie, vmm_pci_address_t addr, unsigned int offset) {
-    return pci_config_read32(addr.bus, addr.dev, addr.fun, offset);
+    uint32_t val = pci_config_read32(addr.bus, addr.dev, addr.fun, offset);
+    printf("[pcnet-passthru] read32 bdf=%d:%d:%d off=0x%x val=0x%08x\n", addr.bus, addr.dev, addr.fun, offset, val);
+    return val;
 }
 static void pcnet_cfg_write8(void *cookie, vmm_pci_address_t addr, unsigned int offset, uint8_t val) {
     pci_config_write8(addr.bus, addr.dev, addr.fun, offset, val);
@@ -58,6 +64,7 @@ static void pcnet_cfg_write32(void *cookie, vmm_pci_address_t addr, unsigned int
 }
 
 int camkes_cross_vm_connections_init(vm_t *vm, vmm_pci_space_t *pci, seL4_CPtr irq_notification, uintptr_t connection_base_address) {
+    printf("[pcnet-passthru] camkes_cross_vm_connections_init called\n");
     /* Register pcnet NIC (host BDF 0:3:0) for pure PCI config space
      * passthrough. This lets the guest discover the pcnet via PCI config
      * space scan. I/O ports (0xc000-0xc01f) and IRQ 11 are handled by camkes
@@ -82,6 +89,7 @@ int camkes_cross_vm_connections_init(vm_t *vm, vmm_pci_space_t *pci, seL4_CPtr i
         pcnet_entry = vmm_pci_create_irq_emulation(pcnet_entry, 11);
         pcnet_entry = vmm_pci_no_msi_cap_emulation(pcnet_entry);
         vmm_pci_add_entry(pci, pcnet_entry, NULL);
+        printf("[pcnet-passthru] vmm_pci_add_entry done\n");
     }
 
     return cross_vm_connections_init(vm, connection_base_address, connections, ARRAY_SIZE(connections), pci, irq_notification);
