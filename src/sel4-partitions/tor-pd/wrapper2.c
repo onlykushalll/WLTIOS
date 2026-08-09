@@ -13,6 +13,7 @@
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <netinet/in.h>
+#include <net/route.h>
 
 static void bring_up_loopback(void){
   /* bring up lo interface and assign 127.0.0.1 */
@@ -41,6 +42,53 @@ static void bring_up_loopback(void){
   sa->sin_addr.s_addr=htonl(0xff000000);
   ioctl(s,SIOCSIFNETMASK,&ifr);
   close(s);
+}
+
+static void bring_up_eth0(void){
+  /* Configure eth0 with static IP for QEMU SLIRP network:
+   * Guest: 10.0.2.15, Gateway: 10.0.2.2, DNS: 10.0.2.3, Netmask: 255.255.255.0
+   */
+  int s=socket(AF_INET,SOCK_DGRAM,0);
+  if(s<0)return;
+  struct ifreq ifr;
+  /* set address 10.0.2.15 */
+  memset(&ifr,0,sizeof(ifr));
+  strncpy(ifr.ifr_name,"eth0",IFNAMSIZ);
+  struct sockaddr_in* sa=(struct sockaddr_in*)&ifr.ifr_addr;
+  sa->sin_family=AF_INET;
+  sa->sin_addr.s_addr=htonl(0x0a00020f); /* 10.0.2.15 */
+  if(ioctl(s,SIOCSIFADDR,&ifr)<0){
+    close(s);return;
+  }
+  /* set netmask 255.255.255.0 */
+  memset(&ifr,0,sizeof(ifr));
+  strncpy(ifr.ifr_name,"eth0",IFNAMSIZ);
+  sa=(struct sockaddr_in*)&ifr.ifr_netmask;
+  sa->sin_family=AF_INET;
+  sa->sin_addr.s_addr=htonl(0xffffff00);
+  ioctl(s,SIOCSIFNETMASK,&ifr);
+  /* set flags: IFF_UP | IFF_RUNNING */
+  memset(&ifr,0,sizeof(ifr));
+  strncpy(ifr.ifr_name,"eth0",IFNAMSIZ);
+  if(ioctl(s,SIOCGIFFLAGS,&ifr)==0){
+    ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
+    ioctl(s,SIOCSIFFLAGS,&ifr);
+  }
+  close(s);
+  /* Set default route via 10.0.2.2 */
+  int rts=socket(AF_INET,SOCK_DGRAM,0);
+  if(rts<0)return;
+  struct rtentry rt;
+  memset(&rt,0,sizeof(rt));
+  struct sockaddr_in* dst=(struct sockaddr_in*)&rt.rt_dst;
+  dst->sin_family=AF_INET; dst->sin_addr.s_addr=0;
+  struct sockaddr_in* gw=(struct sockaddr_in*)&rt.rt_gateway;
+  gw->sin_family=AF_INET; gw->sin_addr.s_addr=htonl(0x0a000202); /* 10.0.2.2 */
+  struct sockaddr_in* mask=(struct sockaddr_in*)&rt.rt_genmask;
+  mask->sin_family=AF_INET; mask->sin_addr.s_addr=0;
+  rt.rt_flags = RTF_UP | RTF_GATEWAY;
+  ioctl(rts,SIOCADDRT,&rt);
+  close(rts);
 }
 
 static void msleep(int ms){struct timespec ts={ms/1000,(long)(ms%1000)*1000000L};nanosleep(&ts,NULL);}
@@ -121,6 +169,7 @@ int main(int argc,char**argv){
   if(pid==0){
     setsid();
     bring_up_loopback();
+    bring_up_eth0();
     int cfd=open("/dev/console",O_RDWR);
     if(cfd>=0){dup2(cfd,1);dup2(cfd,2);}
     int flog=open("/tmp/socks5-test.log",O_WRONLY|O_CREAT|O_TRUNC,0644);
