@@ -160,6 +160,16 @@ static void handle_xdg_destroy(struct wl_listener *listener, void *data) {
     wlt_view_t *view = wl_container_of(listener, view, destroy);
     wl_list_remove(&view->link);
     wl_list_remove(&view->destroy.link);
+    /* [fix] request_move is conditionally wl_signal_add'd in
+     * handle_xdg_surface (when xdg_surface->toplevel exists) but was
+     * never removed here before free(view) - left a dangling listener
+     * entry in xdg_surface->toplevel->events.request_move's list,
+     * pointing into memory about to be freed. wl_listener removal is
+     * never automatic; every wl_signal_add needs a matching
+     * wl_list_remove, same as destroy.link already correctly does. */
+    if (view->request_move.notify) {
+        wl_list_remove(&view->request_move.link);
+    }
     if (g_focused_view == view) g_focused_view = NULL;
     free(view);
     fprintf(stderr, "[compositor] View destroyed\n");
