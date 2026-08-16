@@ -103,8 +103,13 @@ tor_socks_greeting(int fd)
     ssize_t n = read(fd, resp, sizeof(resp));
     if (n < 2)
         return WLT_NET_ERR_TOR_NOT_READY;
-    /* Server must echo VER=5, METHOD=0..0xFF */
-    if (resp[0] != 0x05)
+    /* Server must echo VER=5 and select METHOD=0 (no-auth).
+     * METHOD=0xFF means Tor rejected our greeting (no acceptable
+     * methods); METHOD=0x02 means it requires username/password auth.
+     * Either way Tor is NOT usable as an open SOCKS proxy - treating
+     * that as "ready" would be a false positive that could release the
+     * kill switch while Tor cant actually proxy, defeating Tor-by-default. */
+    if (resp[0] != 0x05 || resp[1] != 0x00)
         return WLT_NET_ERR_TOR_NOT_READY;
     return WLT_NET_OK;
 }
@@ -189,8 +194,19 @@ wlt_tor_proxy_new_identity(wlt_net_state_t *state)
 
     char buf[WLT_TOR_PROBE_BUF];
     memset(buf, 0, sizeof(buf));
+    /* [fix] Use poll() with a timeout - a blocking read() here would
+     * hang the caller indefinitely if the Tor control port stalls
+     * (e.g. Tor died after accept()). The SOCKS probe path already
+     * uses poll(200ms); the control port path was missing it. */
+    struct pollfd auth_pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
+    if (poll(&auth_pfd, 1, 2000) <= 0)
+    {
+        close(fd);
+        WLT_NET_LOG_ERR("Tor control port AUTHENTICATE timeout");
+        return WLT_NET_ERR_TIMEOUT;
+    }
     ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    if (n <= 0 || strstr(buf, "250") == NULL)
+    if (n <= 0 || strncmp(buf, "250", 3) != 0)
     {
         close(fd);
         WLT_NET_LOG_ERR("Tor AUTHENTICATE rejected");
@@ -203,9 +219,16 @@ wlt_tor_proxy_new_identity(wlt_net_state_t *state)
         close(fd);
         return WLT_NET_ERR_IO;
     }
+    struct pollfd ny_pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
+    if (poll(&ny_pfd, 1, 2000) <= 0)
+    {
+        close(fd);
+        WLT_NET_LOG_ERR("Tor control port NEWNYM timeout");
+        return WLT_NET_ERR_TIMEOUT;
+    }
     n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
-    if (n <= 0 || strstr(buf, "250") == NULL)
+    if (n <= 0 || strncmp(buf, "250", 3) != 0)
     {
         WLT_NET_LOG_ERR("Tor NEWNYM rejected");
         return WLT_NET_ERR_IO;
