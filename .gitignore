@@ -53,3 +53,11 @@ context.txt
 /check_all_final.sh
 /debug_apkindex.sh
 /packages/
+
+
+# AI & Session residue
+.agents/
+.claude/
+.codex/
+*.handoff.md
+*HANDOFF*
