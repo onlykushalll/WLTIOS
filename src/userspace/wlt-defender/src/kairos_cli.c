@@ -152,13 +152,33 @@ static int call_model(const char *system_prompt, const char *user_msg,
         sys_esc, user_esc);
     if (n < 0 || n >= (int)sizeof(body)) return -ENAMETOOLONG;
 
-    /* POST to localhost:8080/v1/chat/completions via curl */
-    char cmd[34816];
+    /* [fix 2026-08-16] SEVERE: body (built from event_id/question - raw,
+     * unsanitized argv[2]) used to be interpolated straight into a shell
+     * command string via -d '%s' and run through popen(). The JSON
+     * escaping above only handles ", \, and \n - it does not escape shell
+     * metacharacters, especially the single quote. A single quote in
+     * event_id or question broke out of the shell's quoted string, and
+     * anything after it ran as a literal shell command - e.g.
+     * `kairos explain "foo' ; touch /tmp/pwned ; echo '"` executed touch
+     * as whoever runs this CLI. Fixed by writing body to a securely
+     * created temp file (mkstemp) and having curl read it via
+     * --data-binary @path - the shell command string now contains only a
+     * program-generated temp path, never anything user-supplied. */
+    char tmp_path[] = "/tmp/kairos-req-XXXXXX";
+    int tmp_fd = mkstemp(tmp_path);
+    if (tmp_fd < 0) return -errno;
+    FILE *tf = fdopen(tmp_fd, "w");
+    if (!tf) { close(tmp_fd); unlink(tmp_path); return -errno; }
+    fwrite(body, 1, strlen(body), tf);
+    fclose(tf);
+
+    char cmd[512];
     snprintf(cmd, sizeof(cmd),
         "curl -s -X POST http://127.0.0.1:%d/v1/chat/completions "
-        "-H 'Content-Type: application/json' -d '%s' 2>/dev/null", KAIROS_PORT, body);
+        "-H 'Content-Type: application/json' --data-binary @%s 2>/dev/null",
+        KAIROS_PORT, tmp_path);
     FILE *p = popen(cmd, "r");
-    if (!p) return -errno;
+    if (!p) { unlink(tmp_path); return -errno; }
     char resp[32768] = {0}; size_t off = 0;
     while (off < sizeof(resp)-1) {
         size_t got = fread(resp+off, 1, sizeof(resp)-1-off, p);
@@ -166,6 +186,7 @@ static int call_model(const char *system_prompt, const char *user_msg,
         off += got;
     }
     pclose(p);
+    unlink(tmp_path);
 
     /* extract content from JSON response: ...{"content":"..."}... */
     char *c = strstr(resp, "\"content\"");

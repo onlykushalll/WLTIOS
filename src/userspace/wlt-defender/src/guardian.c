@@ -92,6 +92,20 @@ static void g_get_log_key(uint8_t key[32]) {
         fclose(urand);
         if (read_bytes == 32) return;
     }
+    /* [fix 2026-08-16] This used to silently fall back to a hardcoded,
+     * universally-known key (0x55 repeated) with no warning. "Encrypted"
+     * logs under that key are trivially readable by anyone who's seen
+     * this source - worse than no encryption, since it looks
+     * confidential and isn't. The FIM key generation later in this same
+     * file already gets this right (explicitly refuses a deterministic
+     * key and warns instead of silently using one) - this should fail
+     * the same loud way. Not restructuring the call chain to skip log
+     * encryption entirely here (this function's signature and every
+     * call site would need to change), but at minimum this failure mode
+     * is now visible instead of silent. */
+    fprintf(stderr, "[guardian] CRITICAL: /dev/urandom unavailable - log "
+                     "encryption key is a hardcoded, publicly-known value. "
+                     "Logs are NOT confidential until this is resolved.\n");
     memset(key, 0x55, 32);
 }
 

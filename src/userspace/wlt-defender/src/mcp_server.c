@@ -656,10 +656,24 @@ static char t_file_restore(const mcp_args *a, char *out, size_t sz) {
  *  IRREVERSIBLE ACTION TOOLS (human-confirm required)          *
  * ============================================================ */
 
+/* [fix 2026-08-16] Every irreversible-tier call site below checked
+ * !getenv("MCP_AUTOCONFIRM") - a PRESENCE check, not a value check.
+ * getenv() only returns NULL when the variable is fully unset, so
+ * MCP_AUTOCONFIRM=0 or MCP_AUTOCONFIRM=false bypassed the gate exactly
+ * the same as MCP_AUTOCONFIRM=1 - every error message here documents
+ * "=1" as the intended usage, but the code never actually checked the
+ * value. Someone trying to explicitly disable auto-confirm by setting
+ * it to 0 would accidentally enable it instead. One helper, used
+ * everywhere this was checked. */
+static int mcp_autoconfirmed(void) {
+    const char *v = getenv("MCP_AUTOCONFIRM");
+    return v != NULL && strcmp(v, "1") == 0;
+}
+
 static char t_process_kill(const mcp_args *a, char *out, size_t sz) {
     long pid = args_get_long(a, "pid", -1);
     if (pid < 0) return snprintf(out, sz, "{\"error\":\"missing pid\"}"), MCP_RETURN_JSON;
-    if (!getenv("MCP_AUTOCONFIRM"))
+    if (!mcp_autoconfirmed())
         return snprintf(out, sz, "{\"error\":\"irreversible action requires MCP_AUTOCONFIRM=1 or human confirm\","
                        "\"pid\":%ld,\"tier\":\"irreversible\"}", pid), MCP_RETURN_JSON;
     int rc = g_action_kill((pid_t)pid, true);
@@ -671,7 +685,7 @@ static char t_secure_delete(const mcp_args *a, char *out, size_t sz) {
     if (!path) return snprintf(out, sz, "{\"error\":\"missing path\"}"), MCP_RETURN_JSON;
     if (is_dangerous_path(path))
         return snprintf(out, sz, "{\"error\":\"denied\"}"), MCP_RETURN_JSON;
-    if (!getenv("MCP_AUTOCONFIRM"))
+    if (!mcp_autoconfirmed())
         return snprintf(out, sz, "{\"error\":\"irreversible action requires MCP_AUTOCONFIRM=1\"}"), MCP_RETURN_JSON;
     int rc = g_action_delete(path);
     return snprintf(out, sz, "{\"path\":\"%s\",\"action\":\"secure_delete\",\"rc\":%d}", path, rc),
@@ -680,7 +694,7 @@ static char t_secure_delete(const mcp_args *a, char *out, size_t sz) {
 
 static char t_kill_switch(const mcp_args *a, char *out, size_t sz) {
     (void)a;
-    if (!getenv("MCP_AUTOCONFIRM"))
+    if (!mcp_autoconfirmed())
         return snprintf(out, sz, "{\"error\":\"kill_switch is irreversible — requires MCP_AUTOCONFIRM=1\"}"),
                MCP_RETURN_JSON;
 
@@ -739,7 +753,7 @@ static char t_kill_switch(const mcp_args *a, char *out, size_t sz) {
 static char t_file_encrypt(const mcp_args *a, char *out, size_t sz) {
     const char *path = args_get(a, "path");
     if (!path) return snprintf(out, sz, "{\"error\":\"missing path\"}"), MCP_RETURN_JSON;
-    if (!getenv("MCP_AUTOCONFIRM"))
+    if (!mcp_autoconfirmed())
         return snprintf(out, sz, "{\"error\":\"irreversible — requires MCP_AUTOCONFIRM=1\"}"), MCP_RETURN_JSON;
     return snprintf(out, sz, "{\"path\":\"%s\",\"action\":\"encrypt\",\"error\":\"Key Vault not yet implemented (v2)\"}",
                     path), MCP_RETURN_JSON;
@@ -887,7 +901,7 @@ static void handle_request(const char *req_json, char *resp, size_t resp_sz) {
             return;
         }
         /* check tier gate */
-        if (t->tier == TIER_IRREVERSIBLE && !getenv("MCP_AUTOCONFIRM")) {
+        if (t->tier == TIER_IRREVERSIBLE && !mcp_autoconfirmed()) {
             snprintf(resp, resp_sz, "{\"jsonrpc\":\"2.0\",\"id\":%ld,\"error\":"
                      "{\"code\":-32000,\"message\":\"irreversible tool requires MCP_AUTOCONFIRM=1\"}}", id);
             return;

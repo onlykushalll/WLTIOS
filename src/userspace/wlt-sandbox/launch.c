@@ -308,6 +308,17 @@ wlt_sandbox_launch(wlt_SandboxManager *m, const char *manifest_path,
         return WLT_SANDBOX_ERR_INVALID_ARG;
 
     wlt_sandbox_error_t e;
+    /* [fix 2026-08-24] Set when the filesystem grant is DENY; applied to
+     * app->manifest (the struct that actually matters) after
+     * prepare_app_slot() below, not to the throwaway `mfst` used only
+     * for the permission decision. See gap #18 in STATUS_ROADMAP.md -
+     * the previous code set mfst.filesystem = WLT_FS_NONE, but mfst
+     * goes out of scope at the end of the block below and is never used
+     * again; app->manifest is a SEPARATE struct loaded independently
+     * inside prepare_app_slot(), so the override never reached the
+     * manifest the sandboxed child actually gets set up with. Correctly
+     * logged as denied, never actually enforced. */
+    int fs_deny_override = 0;
 
     /* --- Permission check (wlt-permissions, C.2) ---
      * Check BEFORE cgroup setup so the denial fires even without root.
@@ -388,6 +399,7 @@ wlt_sandbox_launch(wlt_SandboxManager *m, const char *manifest_path,
                     WLT_LAUNCH_LOG_ERR("PERMISSION DENIED: %s requests filesystem (%s) but grant is DENY",
                                        mfst.name, wlt_manifest_fs_str(mfst.filesystem));
                     mfst.filesystem = WLT_FS_NONE;
+                    fs_deny_override = 1;  /* [fix 2026-08-24] the real, enforced override - see comment above */
                     wlt_perms_audit_log(WLT_PERMS_AUDIT_DENIED, mfst.name,
                                         WLT_PERM_FILESYSTEM, "launch", "system",
                                         "filesystem denied, overridden to NONE");
@@ -407,6 +419,13 @@ wlt_sandbox_launch(wlt_SandboxManager *m, const char *manifest_path,
     wlt_SandboxApp *app = prepare_app_slot(m, manifest_path, &e);
     if (app == NULL)
         return e;
+
+    /* [fix 2026-08-24] The actual enforcement - see the fs_deny_override
+     * comment near the top of this function. app->manifest is what
+     * child_setup() -> wlt_sandbox_setup_filesystem() reads; this is the
+     * first point in this function where that struct exists. */
+    if (fs_deny_override)
+        app->manifest.filesystem = WLT_FS_NONE;
 
     char user_home[WLT_SANDBOX_MAX_PATH];
     resolve_user_home(user_home_in, user_home, sizeof(user_home));

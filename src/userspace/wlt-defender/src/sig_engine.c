@@ -28,6 +28,8 @@ struct g_sig_engine {
     // Canary rollback fields
     YR_RULES *backup_rules;
     int backup_n_rules;
+    char staged_path[G_PATH_MAX];  /* [fix 2026-08-22] verified-but-not-yet-
+                                     * durable rules file; see g_sig_fetch_updates */
 };
 
 typedef struct {
@@ -455,27 +457,6 @@ static int verify_ed25519_signature(const uint8_t *data, size_t data_len,
     return -EACCES; // Invalid
 }
 
-static int copy_file(const char *src, const char *dst) {
-    int sfd = open(src, O_RDONLY);
-    if (sfd < 0) return -errno;
-    int dfd = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (dfd < 0) {
-        close(sfd);
-        return -errno;
-    }
-    char buf[4096];
-    ssize_t n;
-    while ((n = read(sfd, buf, sizeof(buf))) > 0) {
-        if (write(dfd, buf, n) != n) {
-            close(sfd);
-            close(dfd);
-            return -EIO;
-        }
-    }
-    close(sfd);
-    close(dfd);
-    return 0;
-}
 
 static void write_update_status(const char *result) {
     mkdir("/run/guardian", 0700);
@@ -607,60 +588,75 @@ int g_sig_fetch_updates(g_sig_engine_t *se, const char *update_url, const char *
         return -EINVAL;
     }
 
-    // Backup the old file on disk first
-    char backup_file_path[G_PATH_MAX];
-    snprintf(backup_file_path, sizeof(backup_file_path), "%s.bak", se->compiled_rules_path);
-    unlink(backup_file_path);
-    copy_file(se->compiled_rules_path, backup_file_path);
-
-    // Atomically replace on disk
-    if (rename(temp_rules_path, se->compiled_rules_path) != 0) {
-        yr_rules_destroy(new_rules);
-        unlink(temp_rules_path);
-        unlink(backup_file_path);
-        write_update_status("failed");
-        return -errno;
-    }
-
-    // Preserve old rules in memory as backup for canary rollback
+    /* [fix 2026-08-22] Researched against ClamAV's freshclam/clamd update
+     * pattern: verify fully, THEN swap the live in-memory pointer, and
+     * only make the change durable on disk once it's actually proven -
+     * never touch the on-disk "source of truth" before that. Previously
+     * this function renamed straight onto se->compiled_rules_path right
+     * here, before the 5-minute alert-rate canary period in guardian.c
+     * even started. If the daemon restarted at any point during that
+     * window - a genuinely long window for an unrelated crash/restart to
+     * land in - g_sig_init() on the next boot loaded the new,
+     * never-validated rules directly, with zero memory a canary
+     * evaluation was ever supposed to happen. Now: keep the verified,
+     * loaded rules staged at temp_rules_path (not yet renamed anywhere),
+     * swap the in-memory pointer so canary monitoring actually exercises
+     * the real new rules, and leave the ACTUAL on-disk promotion to
+     * g_sig_commit_updates() - which only runs after guardian.c's canary
+     * period passes clean. A restart during the canary window now falls
+     * back to the untouched, still-good old rules on disk, exactly like
+     * clamd "keeping the previous instance" on a failed reload. */
     if (se->backup_rules) {
         yr_rules_destroy(se->backup_rules);
     }
     se->backup_rules = se->rules;
     se->backup_n_rules = se->n_rules;
+    g_strlcpy(se->staged_path, temp_rules_path, sizeof(se->staged_path));
 
-    // Swap in the new rules in-memory
     se->rules = new_rules;
     se->n_rules = 0;
     YR_RULE *r;
     yr_rules_foreach(se->rules, r) se->n_rules++;
 
-    printf("[sig] YARA signature database updated to %d rules (backup stored for canary)\n", se->n_rules);
-    write_update_status("success");
+    printf("[sig] YARA signature database staged (%d rules, in-memory active, "
+           "canary pending) - not yet durable on disk until commit\n", se->n_rules);
+    write_update_status("staged");
     return 0;
 }
 
 void g_sig_commit_updates(g_sig_engine_t *se) {
     if (!se) return;
+    /* [fix 2026-08-22] This is now the ONLY place the on-disk live rules
+     * path actually changes - see the fetch-time comment above. Only
+     * reached after guardian.c's canary period passes without an alert
+     * spike, so the rules being promoted have actually been exercised
+     * against real traffic first. */
+    if (se->staged_path[0] != '\0') {
+        if (rename(se->staged_path, se->compiled_rules_path) != 0) {
+            fprintf(stderr, "[sig] WARNING: canary passed but promoting staged "
+                            "rules to %s failed: %s - staying on in-memory "
+                            "rules for this run, will retry on next fetch\n",
+                    se->compiled_rules_path, strerror(errno));
+        }
+        se->staged_path[0] = '\0';
+    }
     if (se->backup_rules) {
         yr_rules_destroy(se->backup_rules);
         se->backup_rules = NULL;
     }
-    char backup_file_path[G_PATH_MAX];
-    snprintf(backup_file_path, sizeof(backup_file_path), "%s.bak", se->compiled_rules_path);
-    unlink(backup_file_path);
 }
 
 int g_sig_rollback_updates(g_sig_engine_t *se) {
     if (!se || !se->backup_rules) return -EINVAL;
 
-    char backup_file_path[G_PATH_MAX];
-    snprintf(backup_file_path, sizeof(backup_file_path), "%s.bak", se->compiled_rules_path);
-
-    if (rename(backup_file_path, se->compiled_rules_path) != 0) {
-        copy_file(backup_file_path, se->compiled_rules_path);
+    /* [fix 2026-08-22] The on-disk live path was never touched by fetch
+     * (see the fetch-time comment above) - there is nothing to restore on
+     * disk, just discard the staged (never-promoted) file and swap the
+     * in-memory pointer back. */
+    if (se->staged_path[0] != '\0') {
+        unlink(se->staged_path);
+        se->staged_path[0] = '\0';
     }
-    unlink(backup_file_path);
 
     if (se->rules) {
         yr_rules_destroy(se->rules);
@@ -669,6 +665,8 @@ int g_sig_rollback_updates(g_sig_engine_t *se) {
     se->n_rules = se->backup_n_rules;
     se->backup_rules = NULL;
 
-    printf("[sig] successfully rolled back to previous signature database (%d rules)\n", se->n_rules);
+    printf("[sig] canary failed - discarded staged rules, still on previous "
+           "signature database (%d rules), which was never touched on disk\n",
+           se->n_rules);
     return 0;
 }

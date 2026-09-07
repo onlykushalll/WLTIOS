@@ -1,9 +1,14 @@
 /* canary_engine.c — Phase 2.1: Ransomware canary file engine.
  *
- * Creates bait files in locations ransomware encrypts first (alphabetically
- * early names so mass-encryptors hit them first). Any access or modification
- * = immediate CRITICAL alert + freeze. Zero false positives by construction:
- * no legitimate process touches "!GUARDIAN_CANARY_*" files.
+ * Creates bait files in locations ransomware encrypts first: both system
+ * dirs and, per real user under /home, the actual Documents/Pictures/
+ * Desktop/Downloads locations a desktop ransomware attack targets. Any
+ * access or modification = immediate CRITICAL alert + freeze. The
+ * filename is derived per-machine (see derive_canary_name()) rather than
+ * a single fixed string, so it can't be excluded by one hardcoded name
+ * across every installation the way "!GUARDIAN_CANARY_DO_NOT_TOUCH.bin"
+ * could - real ransomware families are documented checking for known
+ * EDR canary patterns by name.
  *
  * The BPF LSM file_open hook (Phase 4.1) will inline-kill openers; until then
  * the userspace verify loop catches deletion/modification within 30s.
@@ -17,11 +22,11 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <time.h>
+#include <dirent.h>
 #include <openssl/rand.h>
 
-#define G_CANARY_NAME "!GUARDIAN_CANARY_DO_NOT_TOUCH.bin"
 #define G_CANARY_SIZE 1024
-#define G_MAX_CANARIES 8
+#define G_MAX_CANARIES 24
 
 struct g_canary {
     char path[G_PATH_MAX];
@@ -34,26 +39,94 @@ struct g_canary_engine {
     int n;
 };
 
-/* placement dirs — ransomware hits these first */
-static const char *g_canary_dirs[] = {
-    "/tmp", "/var/tmp", "/etc", "/root", "/home",
-    NULL
-};
-
 static void canary_hash(const uint8_t *data, size_t len, uint8_t out[32]) {
     g_sha256(data, len, out);
+}
+
+/* [improvement 2026-08-22] Real ransomware families are documented
+ * checking process/file lists for known EDR canary naming patterns and
+ * skipping them - a single fixed name shipped identically in every
+ * installation is exactly the kind of thing such a check hardcodes
+ * once and defeats everywhere. Derive a per-machine name instead:
+ * deterministic from /etc/machine-id (same file -> same name across
+ * restarts, so the existing O_EXCL-retry/re-hash logic below still
+ * works), but different per installation, so no single exclusion
+ * entry works across machines. Also picked to look like a real user
+ * file (a photo/scan/document naming pattern), not an obvious
+ * security-tool name. */
+static void derive_canary_name(char *out, size_t out_sz) {
+    uint8_t seed[128] = {0};
+    size_t seed_len = 0;
+    FILE *mf = fopen("/etc/machine-id", "r");
+    if (mf) {
+        seed_len = fread(seed, 1, sizeof(seed) - 32, mf);
+        fclose(mf);
+    }
+    /* Salt so this hash never collides with any other derivation that
+     * might also key off machine-id elsewhere in the system. */
+    const char *salt = "guardian-canary-v1";
+    size_t salt_len = strlen(salt);
+    if (seed_len + salt_len < sizeof(seed)) {
+        memcpy(seed + seed_len, salt, salt_len);
+        seed_len += salt_len;
+    }
+    uint8_t h[32];
+    g_sha256(seed, seed_len, h);
+    static const char *prefixes[] = {"IMG_", "Scan_", "Document_", "Photo_", "Backup_", "Receipt_"};
+    static const char *exts[]     = {".jpg", ".pdf", ".docx", ".png", ".zip", ".xlsx"};
+    int pi = h[0] % (int)(sizeof(prefixes) / sizeof(prefixes[0]));
+    int ei = h[1] % (int)(sizeof(exts) / sizeof(exts[0]));
+    snprintf(out, out_sz, "%s%02x%02x%02x%02x%s",
+             prefixes[pi], h[2], h[3], h[4], h[5], exts[ei]);
+}
+
+/* [improvement 2026-08-22] The original static list (/tmp, /var/tmp,
+ * /etc, /root, /home) skips the directories an actual desktop
+ * ransomware attack encrypts - a real user's Documents/Pictures/
+ * Desktop/Downloads. Build the placement list dynamically: the
+ * original system dirs, plus those four real subdirectories for every
+ * user found under /home that actually has them. */
+static int build_canary_dirs(char dirs[][G_PATH_MAX], int max_dirs) {
+    int n = 0;
+    static const char *system_dirs[] = { "/tmp", "/var/tmp", "/etc", "/root", NULL };
+    for (int i = 0; system_dirs[i] && n < max_dirs; i++)
+        g_strlcpy(dirs[n++], system_dirs[i], G_PATH_MAX);
+
+    DIR *home = opendir("/home");
+    if (home) {
+        struct dirent *ent;
+        static const char *subdirs[] = { "Documents", "Pictures", "Desktop", "Downloads", NULL };
+        while ((ent = readdir(home)) != NULL && n < max_dirs) {
+            if (ent->d_name[0] == '.') continue;
+            for (int j = 0; subdirs[j] && n < max_dirs; j++) {
+                char candidate[G_PATH_MAX];
+                snprintf(candidate, sizeof(candidate), "/home/%s/%s", ent->d_name, subdirs[j]);
+                struct stat st;
+                if (stat(candidate, &st) == 0 && S_ISDIR(st.st_mode))
+                    g_strlcpy(dirs[n++], candidate, G_PATH_MAX);
+            }
+        }
+        closedir(home);
+    }
+    return n;
 }
 
 g_canary_engine_t *g_canary_init(void) {
     g_canary_engine_t *ce = calloc(1, sizeof(*ce));
     if (!ce) return NULL;
 
-    for (int i = 0; g_canary_dirs[i] && ce->n < G_MAX_CANARIES; i++) {
-        const char *dir = g_canary_dirs[i];
+    char canary_name[128];
+    derive_canary_name(canary_name, sizeof(canary_name));
+
+    char dirs[G_MAX_CANARIES][G_PATH_MAX];
+    int n_dirs = build_canary_dirs(dirs, G_MAX_CANARIES);
+
+    for (int i = 0; i < n_dirs && ce->n < G_MAX_CANARIES; i++) {
+        const char *dir = dirs[i];
         /* skip dirs we can't write to (non-root in dev sandbox) */
         if (access(dir, W_OK) != 0) continue;
         struct g_canary *c = &ce->canaries[ce->n];
-        snprintf(c->path, sizeof(c->path), "%s/%s", dir, G_CANARY_NAME);
+        snprintf(c->path, sizeof(c->path), "%s/%s", dir, canary_name);
 
         /* generate 1KB random content */
         uint8_t buf[G_CANARY_SIZE];

@@ -24,7 +24,7 @@ TERM = wlt-terminal
 all: $(LIB) $(TERM)
 
 $(LIB): $(LIB_OBJS)
-	ar rcs $@ $(OBJS)
+	ar rcs $@ $(LIB_OBJS)
 
 $(TERM): wlt-term-wayland.c xdg-shell-client-protocol.c xdg-shell-client-protocol.h
 	$(CC) $(CFLAGS) $(WAYLAND_CFLAGS) -I . \
@@ -41,7 +41,7 @@ install: $(TERM)
 	install -D -m 755 $(TERM) $(DESTDIR)/usr/bin/wlt-terminal
 
 clean:
-	rm -f $(OBJS) $(LIB) $(TERM)
+	rm -f $(LIB_OBJS) $(LIB) $(TERM)
 
 # Header dependencies
 terminal.o: include/terminal.h include/pty.h include/ansi.h

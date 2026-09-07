@@ -44,3 +44,12 @@ secrets/
 sel4-build/
 src/userspace/wlt-tor-mgr/wlttor
 wholecontext.txt
+src/userspace/wlt-net/wltnet
+src/userspace/wlt-filemanager/wlt-filemanager
+context.txt
+/a1_*.sh
+/a2_*.sh
+/all_in_one.sh
+/check_all_final.sh
+/debug_apkindex.sh
+/packages/

@@ -544,7 +544,16 @@ int g_action_apply(const g_event_t *ev) {
      * and stored in a static variable — NOT in the environment. */
     static char g_confirm_token[64] = {0};
     const char *confirm = getenv("GUARDIAN_CONFIRM_TOKEN");
-    if (!confirm || strcmp(confirm, g_confirm_token) != 0) {
+    /* [fix 2026-08-16] g_confirm_token starts (and, unless something outside
+     * this function can reach it, permanently stays) an empty string. The
+     * original check only compared confirm != NULL and strcmp(confirm,
+     * g_confirm_token) - so GUARDIAN_CONFIRM_TOKEN="" (a set-but-empty env
+     * var, e.g. `export GUARDIAN_CONFIRM_TOKEN=`) would strcmp-equal an
+     * unset token and bypass human-confirm entirely for KILL/DELETE/
+     * KILL_SWITCH. Explicitly reject an empty stored token regardless of
+     * what the env var contains - this can only make the gate MORE
+     * restrictive, never blocks a real non-empty token. */
+    if (!confirm || g_confirm_token[0] == '\0' || strcmp(confirm, g_confirm_token) != 0) {
         /* also accept MCP_AUTOCONFIRM for backward compat with MCP server,
          * but log a warning that it's the legacy path */
         if (!getenv("MCP_AUTOCONFIRM")) {

@@ -198,7 +198,17 @@ static __always_inline __u64 hash_str(const char *s, int max_len)
         char c = 0;
         bpf_probe_read_user(&c, 1, s + i);
         if (!c) break;
-        h ^= c;
+        /* [fix 2026-08-16] h ^= c with signed char sign-extends any byte
+         * >= 0x80 to a 64-bit value of all-1s before the XOR, not the
+         * intended 0-255 byte value - this hash silently diverges from
+         * guardian.c's userspace hash computation (which explicitly casts
+         * to unsigned char) for any comm name containing a high-bit byte,
+         * despite the comment above this function requiring the two to
+         * match exactly. No currently-whitelisted name (passwd/login/
+         * sshd/etc.) hits this - all pure ASCII - so this doesn't break
+         * anything today, but it's a latent correctness gap if this ever
+         * hashes anything else. */
+        h ^= (unsigned char)c;
         h *= 0x100000001b3ULL;
     }
     return h;

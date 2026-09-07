@@ -246,11 +246,20 @@ wlt_ethernet_configure_static(wlt_net_state_t *state,
     if (sscanf(netmask, "%u.%u.%u.%u", &a, &b, &c, &d) != 4)
         return WLT_NET_ERR_PARSE;
     unsigned int m = (a << 24) | (b << 16) | (c << 8) | d;
-    while (m & 0x80000000)
+    unsigned int check = m;
+    while (check & 0x80000000)
     {
         prefix++;
-        m <<= 1;
+        check <<= 1;
     }
+    /* [fix 2026-08-16] The loop above only counts LEADING one-bits, so a
+     * non-contiguous netmask (e.g. 255.0.255.0) would silently produce a
+     * truncated, wrong prefix instead of an error - the trailing 1-bits
+     * after the first 0 were just discarded. Reconstruct the mask that
+     * `prefix` implies and reject if it doesn't match the input exactly. */
+    unsigned int expected = (prefix == 0) ? 0u : (0xFFFFFFFFu << (32 - prefix));
+    if (m != expected)
+        return WLT_NET_ERR_PARSE;
 
     char cidr[WLT_NET_MAX_IP];
     snprintf(cidr, sizeof(cidr), "%s/%d", ip, prefix);

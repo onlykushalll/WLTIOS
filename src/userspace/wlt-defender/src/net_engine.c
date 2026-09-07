@@ -176,7 +176,36 @@ static int check_proto_uid(g_net_engine_t *ne, const char *proto_file, g_event_t
         }
 
         /* Bug 5 fix: if this connection belongs to tor's UID, it's OK */
-        if (ne->tor_uid != (uid_t)-1 && uid == ne->tor_uid) continue;
+        /* [fix 2026-08-24] That was true as far as it went, but this
+         * unconditional `continue` also meant the guard_ips consensus
+         * data loaded by load_tor_consensus() (see the struct comment
+         * near the top of this file: "flag Tor connections to non-guard
+         * IPs... SUSPICIOUS_TOR_DESTINATION") was never actually
+         * consulted anywhere - a real, working parser feeding a check
+         * that never ran (STATUS_ROADMAP.md gap #24). Only add scrutiny
+         * when guard data is actually loaded; if consensus hasn't
+         * loaded yet (n_guard_ips == 0), keep the original trust-tor-uid
+         * behavior rather than flooding false positives with nothing to
+         * check against. raddr_hex and guard_ips[] are both s_addr's
+         * raw network-byte-order bits - directly comparable, confirmed
+         * against this function's own "0100007F = 127.0.0.1" example
+         * above, no byte-swap needed. */
+        if (ne->tor_uid != (uid_t)-1 && uid == ne->tor_uid) {
+            if (ne->n_guard_ips == 0 || rport_hex == 0)
+                continue;
+            int is_guard = 0;
+            for (int gi = 0; gi < ne->n_guard_ips; gi++) {
+                if (ne->guard_ips[gi] == raddr_hex) { is_guard = 1; break; }
+            }
+            if (is_guard)
+                continue;
+            snprintf(out->detail, sizeof(out->detail),
+                     "SUSPICIOUS_TOR_DESTINATION: tor uid=%u connected to "
+                     "non-guard IP %s - possible compromise or "
+                     "consensus-bypass", uid, remote);
+            found = 1;
+            break;
+        }
 
         /* root (uid 0) connections to localhost already skipped above.
          * Root connections to external IPs could be legitimate system stuff
@@ -200,6 +229,24 @@ int g_net_check_leak(g_net_engine_t *ne, g_event_t *out) {
     out->ts_ns = (uint64_t)time(NULL) * 1000000000ULL;
     out->seq = g_bus_next_seq();
     g_strlcpy(out->rule_id, "NET_LEAK_CHECK", sizeof(out->rule_id));
+
+    /* [fix 2026-08-16] find_tor() was previously only ever called once, at
+     * g_net_init() time. If Guardian starts before Tor is actually up (a
+     * real possibility - Tor may run in a separate VM/partition with its
+     * own boot sequence), tor_uid got stuck at the "not found" sentinel
+     * forever, and this engine would flag ALL non-root traffic as
+     * suspicious indefinitely, even after Tor successfully started later.
+     * Retry the lookup on every check while it's still unresolved - once
+     * Tor is found this branch is skipped on all future calls, so the
+     * cost is bounded to the "not found yet" window only. */
+    if (ne->tor_uid == (uid_t)-1) {
+        pid_t pid = find_tor(&ne->tor_uid);
+        if (pid) {
+            ne->tor_pid = pid;
+            printf("[net] tor found on retry: pid=%d uid=%d\n", pid, ne->tor_uid);
+            load_tor_consensus(ne);
+        }
+    }
 
     /* Bug 11 fix: check ALL four /proc/net files (IPv4 + IPv6, TCP + UDP) */
     if (check_proto_uid(ne, "/proc/net/tcp", out) ||

@@ -201,6 +201,18 @@ wlt_net_init(wlt_net_state_t *state, const char *config_path)
     WLT_NET_LOG_INF("Firewall backend: %s",
                      state->use_nftables ? "nftables" : "iptables");
 
+    /* Probe Tor's real status BEFORE deciding kill-switch policy below.
+     * wlt_kill_switch_install() branches on state->tor_state, and until
+     * this probe runs that field is still whatever
+     * wlt_net_config_defaults() set it to, not Tor's actual status.
+     * This call used to sit near the end of this function — which meant
+     * install() always saw an unprobed default and fell through to
+     * apply_block() regardless of whether Tor was actually ready, so
+     * every CLI invocation (including read-only ones like `status`)
+     * forced the firewall to block-all. Found + fixed 2026-08-16; see
+     * docs/STATUS_ROADMAP.md #33. */
+    (void)wlt_tor_proxy_init(state);
+
     /* Install fail-closed rules — Tor-only from the very first moment. */
     if (state->kill_switch_enabled)
     {
@@ -237,7 +249,6 @@ wlt_net_init(wlt_net_state_t *state, const char *config_path)
         WLT_NET_LOG_INF("No WiFi hardware detected — WiFi disabled");
 
     (void)wlt_ethernet_init(state);
-    (void)wlt_tor_proxy_init(state);
 
     struct sigaction sa = {0};
     sa.sa_handler = on_signal;

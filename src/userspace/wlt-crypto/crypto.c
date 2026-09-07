@@ -257,8 +257,20 @@ wlt_crypto_decrypt_file(const char *path, const char *key_id)
 wlt_crypto_error_t
 wlt_crypto_luks_format(const char *device, const char *key_id)
 {
-    if (!g_crypto_initialized)
-        return WLT_CRYPTO_ERR_KEYVAULT;
+    /* [fix 2026-08-23] Removed the g_crypto_initialized gate that used to
+     * sit here. That flag only ever becomes true via wlt_crypto_init() ->
+     * wlt_keyvault_init(), which is the OLD Microkit-direct-IPC stub in
+     * keyvault.c that unconditionally returns WLT_CRYPTO_ERR_UNSUPPORTED -
+     * it can never succeed. That made this entire function, and the
+     * working bridge-based LUKS path underneath it, permanently
+     * unreachable regardless of whether the KeyVaultPD bridge daemon is
+     * actually up. This function already has its own real, working,
+     * fail-closed gate a few lines below: wlt_keyvault_get_volume_key_fd()
+     * itself fails closed if the bridge isn't running. The removed check
+     * was redundant at best and fatal to the whole disk-encryption path
+     * in its actual (broken) state. luks_close()/luks_status() below were
+     * already correctly written without this gate - this brings format/
+     * open in line with them. */
     if (!valid_device(device) || !valid_key_id(key_id))
         return WLT_CRYPTO_ERR_INVALID_ARG;
     /* Research-H integration: fetch the volume key from the KeyVaultPD
@@ -282,8 +294,11 @@ wlt_crypto_error_t
 wlt_crypto_luks_open(const char *device, const char *name,
                      const char *key_id)
 {
-    if (!g_crypto_initialized)
-        return WLT_CRYPTO_ERR_KEYVAULT;
+    /* [fix 2026-08-23] Same fix as wlt_crypto_luks_format() above - see
+     * that comment. The g_crypto_initialized gate was unreachable-true
+     * and blocked the working bridge path; this function's own
+     * wlt_keyvault_get_volume_key_fd() call below is the real, working,
+     * fail-closed gate. */
     if (!valid_device(device) || !valid_luks_name(name) ||
         !valid_key_id(key_id))
         return WLT_CRYPTO_ERR_INVALID_ARG;

@@ -350,10 +350,18 @@ wlt_wifi_connect(wlt_net_state_t *state,
      * hand-rolling escaping that has to exactly match wpa_supplicant's
      * own parser (risky to get right without a live reference), reject
      * any value containing a quote outright - fail closed on
-     * ambiguous input, same as the rest of this codebase does. */
-    if (strchr(ssid, '"') != NULL)
+     * ambiguous input, same as the rest of this codebase does.
+     * [fix 2026-08-16] Same reasoning extends to backslash: wpa_config's
+     * string parser treats '\' as an escape introducer (used for
+     * hex/control-char encoding of raw SSIDs in its .conf grammar), so a
+     * trailing or otherwise placed '\' in an unescaped value risks
+     * consuming the closing quote or altering what gets stored - the
+     * same class of ambiguity the quote check above already exists to
+     * avoid. Rejecting it outright is the same fail-closed call. */
+    if (strchr(ssid, '"') != NULL || strchr(ssid, '\\') != NULL)
         return WLT_NET_ERR_INVALID_ARG;
-    if (psk != NULL && strchr(psk, '"') != NULL)
+    if (psk != NULL &&
+        (strchr(psk, '"') != NULL || strchr(psk, '\\') != NULL))
         return WLT_NET_ERR_INVALID_ARG;
 
     /* Randomize MAC before each connect (privacy). */

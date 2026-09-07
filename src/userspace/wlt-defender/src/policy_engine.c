@@ -60,8 +60,17 @@ static g_action_t default_action(const g_event_t *ev) {
             "/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/lib/",
             NULL
         };
+        /* [fix 2026-08-16] strstr() matches these paths as a substring
+         * ANYWHERE in ev->path, not as the start of it - "/etc/passwd"
+         * would also match an unrelated file like
+         * "/mnt/backup/etc/passwd" or "/home/user/notes/etc/passwd.txt".
+         * That's a false-positive direction (over-triggers RESTORE_FILE
+         * on unrelated paths that merely contain the substring), not a
+         * missed detection, but it's still the wrong check - this should
+         * be anchored to the start of the path. */
         for (int i = 0; critical_paths[i]; i++) {
-            if (strstr(ev->path, critical_paths[i])) return G_ACT_RESTORE_FILE;
+            size_t plen = strlen(critical_paths[i]);
+            if (strncmp(ev->path, critical_paths[i], plen) == 0) return G_ACT_RESTORE_FILE;
         }
         return G_ACT_ALERT;
     }

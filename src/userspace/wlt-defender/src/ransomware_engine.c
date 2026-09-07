@@ -15,6 +15,8 @@
 #include <time.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <signal.h>
+#include <errno.h>
 
 /* we read BPF maps via the ebpf engine's helper */
 #ifdef G_HAVE_LIBBPF
@@ -87,6 +89,25 @@ static int find_slot(g_ransomware_engine_t *re, __u32 pid) {
         re->slots[re->n].prev_write = 0;
         re->slots[re->n].first_seen = time(NULL);
         return re->n++;
+    }
+    /* [fix 2026-08-16] Table was full-forever once 64 distinct PIDs had
+     * EVER been seen - re->n only ever grew, with no reclamation for PIDs
+     * whose process has since exited. On any normally-active system, 64
+     * distinct PIDs cycle through in minutes, after which every NEW
+     * process - including a ransomware process that just started - got
+     * skipped by find_slot() returning -1 forever. Reuse the first slot
+     * whose process no longer exists (kill(pid,0) with ESRCH is the
+     * standard existence check - it sends no actual signal). If all 64
+     * slots are genuinely live processes, still return -1. */
+    for (int i = 0; i < 64; i++) {
+        if (kill((pid_t)re->slots[i].pid, 0) == -1 && errno == ESRCH) {
+            re->slots[i].pid = pid;
+            re->slots[i].prev_unlink = 0;
+            re->slots[i].prev_rename = 0;
+            re->slots[i].prev_write = 0;
+            re->slots[i].first_seen = time(NULL);
+            return i;
+        }
     }
     return -1;
 }

@@ -149,9 +149,15 @@ nft_allow_tor(uint16_t socks_port, uint16_t dns_port)
     if (err != WLT_NET_OK)
         return err;
 
-    /* Allow replies from loopback services back to local sockets. */
+    /* Allow replies from loopback services back to local sockets.
+     * iifname-restricted (not just saddr) as belt-and-suspenders against
+     * a spoofed-source packet arriving on a non-lo interface, even though
+     * the kernel's own martian-packet check should already drop
+     * 127.0.0.0/8-sourced packets seen on external interfaces. This file's
+     * whole purpose is defense-in-depth, so it shouldn't lean on an
+     * unstated kernel behavior for the one rule that skipped it. */
     snprintf(spec, sizeof(spec),
-             "add rule inet %s %s ip saddr 127.0.0.1 accept",
+             "add rule inet %s %s iifname \"lo\" ip saddr 127.0.0.1 accept",
              WLT_KS_NFT_TABLE, WLT_KS_NFT_CHAIN_IN);
     return run_nft(spec);
 }
@@ -240,6 +246,7 @@ iptables_allow_tor(uint16_t socks_port, uint16_t dns_port)
                    (char *)"--dport", dns_arg,
                    (char *)"-j", (char *)"ACCEPT", NULL };
     char *a4[] = { (char *)"iptables", (char *)"-A", (char *)"INPUT",
+                   (char *)"-i", (char *)"lo",
                    (char *)"-s", (char *)"127.0.0.1",
                    (char *)"-j", (char *)"ACCEPT", NULL };
 

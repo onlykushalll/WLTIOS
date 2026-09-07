@@ -178,6 +178,32 @@ wlt_fm_copy_directory(const char *src, const char *dst)
         snprintf(src_path, sizeof(src_path), "%s/%s", src, entry->d_name);
         snprintf(dst_path, sizeof(dst_path), "%s/%s", dst, entry->d_name);
 
+        /* [fix 2026-08-16] lstat, not stat: a symlink to a directory must
+         * never be treated as a directory to recurse into here. Recursing
+         * through it can copy an unbounded, unrelated subtree (if it
+         * points outside src) or loop forever (if it points back to an
+         * ancestor of src) - previously unguarded either way. Recreate
+         * the symlink itself instead of dereferencing it, matching what
+         * `cp -r` does by default. */
+        struct stat lst;
+        if (lstat(src_path, &lst) == 0 && S_ISLNK(lst.st_mode))
+        {
+            char target[WLT_FM_MAX_PATH];
+            ssize_t tlen = readlink(src_path, target, sizeof(target) - 1);
+            if (tlen < 0)
+            {
+                closedir(d);
+                return WLT_FM_ERR_IO;
+            }
+            target[tlen] = '\0';
+            if (symlink(target, dst_path) != 0)
+            {
+                closedir(d);
+                return WLT_FM_ERR_IO;
+            }
+            continue;
+        }
+
         if (wlt_fm_is_directory(src_path))
         {
             err = wlt_fm_copy_directory(src_path, dst_path);
@@ -262,6 +288,18 @@ wlt_fm_delete_directory(const char *path)
     if (path == NULL)
         return WLT_FM_ERR_INVALID_ARG;
 
+    /* [fix 2026-08-16] lstat guard: if `path` itself is a symlink to a
+     * directory, do not recurse into and destroy whatever it points to.
+     * A caller (including wlt_fm_move()'s cross-filesystem fallback,
+     * which reaches this function with the original src on EXDEV) handing
+     * this a symlink means "remove this link", not "recursively delete
+     * the directory this link happens to point at" - previously this
+     * fell through to opendir()/readdir() on the link's target and
+     * deleted everything inside it. */
+    struct stat top_lst;
+    if (lstat(path, &top_lst) == 0 && S_ISLNK(top_lst.st_mode))
+        return (unlink(path) == 0) ? WLT_FM_OK : WLT_FM_ERR_IO;
+
     if (!wlt_fm_is_directory(path))
         return WLT_FM_ERR_NOT_FOUND;
 
@@ -281,7 +319,19 @@ wlt_fm_delete_directory(const char *path)
         char full_path[WLT_FM_MAX_PATH];
         snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name);
 
-        if (wlt_fm_is_directory(full_path))
+        /* [fix 2026-08-16] Same lstat guard as the top-level check above,
+         * applied to each entry found during recursion: a symlink child
+         * is unlinked directly, never recursed into. Without this, a
+         * folder containing a symlink pointing anywhere else on the
+         * filesystem - a parent, /, /home, anywhere - would have its
+         * target's contents destroyed by an ordinary "delete this
+         * folder" action, unbounded by what the user actually selected. */
+        struct stat entry_lst;
+        if (lstat(full_path, &entry_lst) == 0 && S_ISLNK(entry_lst.st_mode))
+        {
+            err = (unlink(full_path) == 0) ? WLT_FM_OK : WLT_FM_ERR_IO;
+        }
+        else if (wlt_fm_is_directory(full_path))
             err = wlt_fm_delete_directory(full_path);
         else
             err = wlt_fm_delete_file(full_path);

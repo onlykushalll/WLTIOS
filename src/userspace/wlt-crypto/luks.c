@@ -27,7 +27,12 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/syscall.h>
+
+#ifndef TMPFS_MAGIC
+#define TMPFS_MAGIC 0x01021994
+#endif
 
 extern char **environ;
 
@@ -46,6 +51,28 @@ zero_buf(void *buf, size_t len)
     volatile uint8_t *p = (volatile uint8_t *)buf;
     while (len--)
         *p++ = 0;
+}
+
+/* [improvement 2026-08-23] remove_keyfile()'s whole security value -
+ * zero+ftruncate+fsync+unlink instead of a plain unlink - depends on
+ * LUKS_KEYFILE_DIR actually being tmpfs (RAM-backed, never touches real
+ * storage). On a real block device, overwriting-then-deleting a file
+ * does not reliably erase the physical location the ORIGINAL key bytes
+ * landed on: journaling filesystems may have logged the original write,
+ * and on SSDs, wear-leveling/copy-on-write FTL behavior commonly routes
+ * an overwrite to different physical NAND than the first write, leaving
+ * the original block containing the real LUKS volume key un-erased
+ * until an unrelated background GC/TRIM cycle. This was assumed, never
+ * checked. Researched approach: verify via statfs() before trusting the
+ * directory with key material, matching how security-conscious secret
+ * handling treats "temporary" directories - never assumed. */
+static int
+is_tmpfs(const char *path)
+{
+    struct statfs sfs;
+    if (statfs(path, &sfs) != 0)
+        return 0;
+    return sfs.f_type == TMPFS_MAGIC;
 }
 
 static wlt_crypto_error_t
@@ -99,6 +126,14 @@ write_keyfile(int key_fd, char *out_path, size_t out_path_size)
     /* Best-effort: ensure /run/wlt exists. mkdir errors other than EEXIST
      * are caught by the subsequent mkstemp failure. */
     (void)mkdir(LUKS_KEYFILE_DIR, 0700);
+
+    if (!is_tmpfs(LUKS_KEYFILE_DIR)) {
+        WLT_CRYPTO_LOG_ERR("luks: %s is not tmpfs - refusing to stage LUKS "
+                           "key material there (zero+unlink on real storage "
+                           "does not reliably erase the original write)",
+                           LUKS_KEYFILE_DIR);
+        return WLT_CRYPTO_ERR_IO;
+    }
 
     if (snprintf(out_path, out_path_size, "%s", LUKS_KEYFILE_TEMPLATE)
             >= (int)out_path_size)
