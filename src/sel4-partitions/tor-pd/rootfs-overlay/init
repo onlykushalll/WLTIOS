@@ -1,0 +1,22 @@
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mount -t tmpfs tmp /tmp
+echo "=== WLTIOS Boot ==="
+# [fix 2026-09-19] Bring up eth0 statically (QEMU user-net). /init never ran
+# the init.d scripts, so /etc/network/interfaces was inert and eth0 had NO
+# address -- Tor bound 9050 but could never bootstrap any circuit (C.2
+# stuck: "reply=1/4 means Tor not bootstrapped (needs real network)").
+ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null
+route add default gw 10.0.2.2 2>/dev/null
+echo "nameserver 10.0.2.3" > /etc/resolv.conf
+echo "[init] eth0: $(ifconfig eth0 2>/dev/null | grep -o 'inet addr:[^ ]*' || echo CONFIG-FAILED)"
+echo "[init] route: $(route -n 2>/dev/null | grep -c UG) default gw entries"
+echo "Starting WLTIOS Shell..."
+setsid /bin/wlt-shell < /dev/console > /dev/console 2>&1
+while true; do
+    echo "Shell exited. Restarting..."
+    setsid /bin/wlt-shell < /dev/console > /dev/console 2>&1
+    sleep 1
+done
