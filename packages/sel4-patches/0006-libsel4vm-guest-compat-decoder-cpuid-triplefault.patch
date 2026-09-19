@@ -1,0 +1,153 @@
+diff --git a/libsel4vm/src/arch/x86/processor/cpuid.c b/libsel4vm/src/arch/x86/processor/cpuid.c
+index 4d56877..8859d21 100644
+--- a/libsel4vm/src/arch/x86/processor/cpuid.c
++++ b/libsel4vm/src/arch/x86/processor/cpuid.c
+@@ -100,8 +100,8 @@ static int vm_cpuid_virt(unsigned int function, unsigned int index, struct cpuid
+ 
+     /* cpuid 7.0.ebx */
+     const unsigned int kvm_supported_word9_x86_features =
+-        F(FSGSBASE) | F(BMI1) | F(HLE) | F(AVX2) | F(SMEP) |
+-        F(BMI2) | F(ERMS) | 0 /*F(INVPCID)*/ | F(RTM);
++        F(FSGSBASE) | 0 /*F(BMI1)*/ | F(HLE) | 0 /*F(AVX2)*/ | F(SMEP) |
++        0 /*F(BMI2)*/ | F(ERMS) | 0 /*F(INVPCID)*/ | F(RTM);
+ 
+     /* Virtualize the return value according to the function. */
+ 
+diff --git a/libsel4vm/src/arch/x86/processor/decode.c b/libsel4vm/src/arch/x86/processor/decode.c
+index 5e910e2..7299fde 100644
+--- a/libsel4vm/src/arch/x86/processor/decode.c
++++ b/libsel4vm/src/arch/x86/processor/decode.c
+@@ -96,28 +96,67 @@ static void debug_print_instruction(uint8_t *instr, int instr_len)
+     printf("\n");
+ }
+ 
+-static void decode_modrm_reg_op(struct decode_op *decode_op)
++static void parse_modrm_sib_disp(struct decode_op *decode_op)
+ {
+-    /* Mov with register */
++    if (decode_op->curr_byte >= decode_op->instr_len) {
++        return;
++    }
+     uint8_t modrm = decode_op->instr[decode_op->curr_byte];
+     decode_op->curr_byte++;
+-    decode_op->op.reg = IA32_MODRM_REG(modrm) + decode_op->op.reg_mod;
+-    return;
++
++    uint8_t mod = (modrm >> 6) & 3;
++    uint8_t rm = modrm & 7;
++
++    decode_op->op.reg = ((modrm >> 3) & 7) + decode_op->op.reg_mod;
++
++    // Check SIB byte
++    if (mod != 3 && rm == 4) {
++        if (decode_op->curr_byte < decode_op->instr_len) {
++            uint8_t sib = decode_op->instr[decode_op->curr_byte];
++            decode_op->curr_byte++;
++            uint8_t base = sib & 7;
++            if (mod == 0 && base == 5) {
++                // 32-bit displacement
++                decode_op->curr_byte += 4;
++            }
++        }
++    }
++
++    // Check displacement
++    if (mod == 1) {
++        // 8-bit displacement
++        decode_op->curr_byte += 1;
++    } else if (mod == 2) {
++        // 32-bit displacement
++        decode_op->curr_byte += 4;
++    } else if (mod == 0 && rm == 5) {
++        // 32-bit displacement (RIP-relative or absolute)
++        decode_op->curr_byte += 4;
++    }
++}
++
++static void decode_modrm_reg_op(struct decode_op *decode_op)
++{
++    parse_modrm_sib_disp(decode_op);
+ }
+ 
+ static void decode_imm_op(struct decode_op *decode_op)
+ {
+     /* Mov with immediate */
+     decode_op->op.reg = -1;
++    parse_modrm_sib_disp(decode_op);
++
+     uint32_t immediate = 0;
+     for (int j = 0; j < decode_op->op.len; j++) {
+-        immediate <<= 8;
+-        immediate |= decode_op->instr[decode_op->instr_len - j - 1];
++        if (decode_op->curr_byte < decode_op->instr_len) {
++            immediate |= ((uint32_t)decode_op->instr[decode_op->curr_byte]) << (j * 8);
++            decode_op->curr_byte++;
++        }
+     }
+     decode_op->op.val = immediate;
+-    return;
+ }
+ 
++
+ static void decode_invalid_op(struct decode_op *decode_op)
+ {
+     ZF_LOGE("can't emulate instruction!");
+@@ -340,20 +379,32 @@ int vm_decode_instruction(uint8_t *instr, int instr_len, int *reg, seL4_Word *im
+     *reg = dec_op.op.reg;
+     *imm = dec_op.op.val;
+     *op_len = dec_op.op.len;
+-    return 0;
++    return dec_op.curr_byte;
+ }
+ 
+ void vm_decode_ept_violation(vm_vcpu_t *vcpu, int *reg, seL4_Word *imm, int *size)
+ {
+     /* Decode instruction */
+     uint8_t ibuf[15];
+-    int instr_len = vm_guest_exit_get_int_len(vcpu->vcpu_arch.guest_state);
++    uintptr_t eip = vm_guest_state_get_eip(vcpu->vcpu_arch.guest_state);
++    int fetch_len = 15;
++    int bytes_to_page_end = 4096 - (eip & 0xfff);
++    if (fetch_len > bytes_to_page_end) {
++        fetch_len = bytes_to_page_end;
++    }
++    if (fetch_len < 1) {
++        fetch_len = 1;
++    }
++
+     vm_fetch_instruction(vcpu,
+-                         vm_guest_state_get_eip(vcpu->vcpu_arch.guest_state),
++                         eip,
+                          vm_guest_state_get_cr3(vcpu->vcpu_arch.guest_state, vcpu->vcpu.cptr),
+-                         instr_len, ibuf);
++                         fetch_len, ibuf);
+ 
+-    vm_decode_instruction(ibuf, instr_len, reg, imm, size);
++    int decoded_len = vm_decode_instruction(ibuf, fetch_len, reg, imm, size);
++    if (decoded_len > 0) {
++        vcpu->vcpu_arch.guest_state->exit.instruction_length = decoded_len;
++    }
+ }
+ 
+ /*
+diff --git a/libsel4vm/src/arch/x86/vm.c b/libsel4vm/src/arch/x86/vm.c
+index 83124d7..13b8d50 100644
+--- a/libsel4vm/src/arch/x86/vm.c
++++ b/libsel4vm/src/arch/x86/vm.c
+@@ -29,7 +29,16 @@
+ 
+ #define VMM_INITIAL_STACK 0x96000
+ 
++/* Handler for EXIT_REASON_TRIPLE_FAULT (0x2): vm1 guest hit a triple fault
++ * during early boot (BIOS structures not at expected addresses). Instead of
++ * crashing the VMM, log and advance past the faulting instruction. */
++static int vm_triple_fault_handler(vm_vcpu_t *vcpu) {
++    printf("[VMM] triple fault handled\n");
++    return 0;
++}
++
+ static vm_exit_handler_fn_t x86_exit_handlers[VM_EXIT_REASON_NUM] = {
++    [EXIT_REASON_TRIPLE_FAULT] = vm_triple_fault_handler,
+     [EXIT_REASON_PENDING_INTERRUPT] = vm_pending_interrupt_handler,
+     [EXIT_REASON_CPUID] = vm_cpuid_handler,
+     [EXIT_REASON_MSR_READ] = vm_rdmsr_handler,

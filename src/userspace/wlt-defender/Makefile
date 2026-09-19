@@ -75,9 +75,9 @@ guardian: $(DAEMON_OBJS)
 
 # --- MCP server (C, ~32 tools, JSON-RPC over Unix socket) ---
 MCP_LDFLAGS := $(DAEMON_LDFLAGS)  # same libs (crypto, etc.)
-mcp: $(BUILD)/mcp_server.o $(BUILD)/action_engine.o $(BUILD)/forensic_log.o
+mcp: $(BUILD)/mcp_server.o $(BUILD)/action_engine.o $(BUILD)/forensic_log.o $(BUILD)/bus_seq.o
 	@echo "[LD]  mcp_server"
-	$(DAEMON_CC) $(BUILD)/mcp_server.o $(BUILD)/action_engine.o $(BUILD)/forensic_log.o \
+	$(DAEMON_CC) $(BUILD)/mcp_server.o $(BUILD)/action_engine.o $(BUILD)/forensic_log.o $(BUILD)/bus_seq.o \
 	    -o $(BUILD)/mcp_server $(MCP_LDFLAGS)
 
 # --- Kairos CLI (loads/unloads Qwythos, calls MCP) ---
@@ -93,7 +93,7 @@ watchdog: $(BUILD)/watchdog.o
 # --- YARA signatures ---
 sigs: rules/guardian.yar
 	@echo "[YARA] compile rules"
-	yarac rules/guardian.yar signatures/guardian.yarc
+	$(GUARDIAN_PREFIX)/bin/yarac rules/guardian.yar signatures/guardian.yarc
 
 keys:
 	@echo "[KEYS] generating Ed25519 keypair"

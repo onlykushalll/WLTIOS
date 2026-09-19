@@ -194,11 +194,21 @@ wlt_sandbox_setup_namespaces(const wlt_SandboxManifest *m)
         return WLT_SANDBOX_ERR_NAMESPACE;
     }
     /* Map our UID/GID to root inside the user namespace. unshare(NEWPID)
-     * only affects children, so we still see ourselves in /proc. */
+     * only affects children, so we still see ourselves in /proc.
+     * [fix 2026-09-19] Was hardcoded to host UID/GID 1000 - only worked
+     * for that one account. A non-root caller can only map a range
+     * containing its OWN real UID/GID anyway, so this would fail
+     * outright (EPERM) for anyone else; using getuid()/getgid() makes
+     * it correct for whichever account actually invokes this. */
     pid_t self = getpid();
+    uid_t real_uid = getuid();
+    gid_t real_gid = getgid();
+    char uid_map_buf[64], gid_map_buf[64];
+    snprintf(uid_map_buf, sizeof(uid_map_buf), "0 %u 1\n", (unsigned)real_uid);
+    snprintf(gid_map_buf, sizeof(gid_map_buf), "0 %u 1\n", (unsigned)real_gid);
     if (write_id_map("setgroups", self, "deny\n") != WLT_SANDBOX_OK ||
-        write_id_map("uid_map", self, "0 1000 1\n") != WLT_SANDBOX_OK ||
-        write_id_map("gid_map", self, "0 1000 1\n") != WLT_SANDBOX_OK)
+        write_id_map("uid_map", self, uid_map_buf) != WLT_SANDBOX_OK ||
+        write_id_map("gid_map", self, gid_map_buf) != WLT_SANDBOX_OK)
         return WLT_SANDBOX_ERR_NAMESPACE;
     /* Recursively mark all mounts private so bind mounts don't leak
      * back to the host mount table. */

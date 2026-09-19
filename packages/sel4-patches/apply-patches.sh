@@ -91,6 +91,23 @@ if [ -d "$SEL4_LIBS" ]; then
     fi
 fi
 
+# Patch 0006: libsel4vm guest-compat stack -- decoder fixes (modrm/SIB/disp
+# parsing, immediate byte-order, page-boundary-clamped EPT fetch), guest
+# CPUID feature masking (hide BMI1/AVX2/BMI2/INVPCID), and a triple-fault
+# exit handler (vm1 early-boot BIOS quirks). All load-bearing for the
+# pcnet passthrough boot; previously build-tree-only (RC1-RC7 era).
+if [ -d "$SEL4_LIBS" ]; then
+    if [ -f "$PATCH_DIR/0006-libsel4vm-guest-compat-decoder-cpuid-triplefault.patch" ]; then
+        cd "$SEL4_LIBS"
+        if git apply --check "$PATCH_DIR/0006-libsel4vm-guest-compat-decoder-cpuid-triplefault.patch" 2>/dev/null; then
+            git apply "$PATCH_DIR/0006-libsel4vm-guest-compat-decoder-cpuid-triplefault.patch"
+            echo "[apply-patches] Applied: 0006-libsel4vm-guest-compat-decoder-cpuid-triplefault"
+        else
+            echo "[apply-patches] Already applied or conflict: 0006-libsel4vm-guest-compat-decoder-cpuid-triplefault"
+        fi
+    fi
+fi
+
 # Patch 0005: vm Init template consumes the RC9 injection API
 # Inject loop calls vm_apic_inject_external_vector(0x30+irq), caches
 # per-irq handler caps, defines vm_rc9_reack_vector() -- host IRQ

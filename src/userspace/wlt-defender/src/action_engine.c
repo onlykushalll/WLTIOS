@@ -491,6 +491,16 @@ int g_action_kill_switch_deactivate(void) {
 
 
 /* ---- apply action from an event ---- */
+/* Mirror of mcp_server.c's mcp_autoconfirmed(): a VALUE check, not a
+ * presence check. getenv() returns non-NULL for MCP_AUTOCONFIRM=0 and
+ * MCP_AUTOCONFIRM=false, so the old !getenv() gate treated an explicit
+ * "disable" as "enable" on the legacy irreversible-action path
+ * (KILL/DELETE/KILL_SWITCH). Only =1 confirms. */
+static int action_mcp_autoconfirmed(void) {
+    const char *v = getenv("MCP_AUTOCONFIRM");
+    return v != NULL && strcmp(v, "1") == 0;
+}
+
 int g_action_apply(const g_event_t *ev) {
     if (!ev) return -EINVAL;
 
@@ -556,7 +566,7 @@ int g_action_apply(const g_event_t *ev) {
     if (!confirm || g_confirm_token[0] == '\0' || strcmp(confirm, g_confirm_token) != 0) {
         /* also accept MCP_AUTOCONFIRM for backward compat with MCP server,
          * but log a warning that it's the legacy path */
-        if (!getenv("MCP_AUTOCONFIRM")) {
+        if (!action_mcp_autoconfirmed()) {
             printf("[action]     -> BLOCKED pending human confirm\n");
             printf("[action]     -> Use 'kairos confirm' or set GUARDIAN_CONFIRM_TOKEN\n");
             return -EPERM;

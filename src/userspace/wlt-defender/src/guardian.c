@@ -113,10 +113,9 @@ static void g_get_log_key(uint8_t key[32]) {
 static g_subscriber_t g_subs[G_MAX_SUBS];
 static void          *g_sub_ud[G_MAX_SUBS];
 static int            g_sub_count = 0;
-static uint64_t       g_seq_counter = 0;
 static pthread_mutex_t g_bus_lock = PTHREAD_MUTEX_INITIALIZER;
 
-int g_bus_init(void) { g_sub_count = 0; g_seq_counter = 0; return 0; }
+int g_bus_init(void) { g_sub_count = 0; return 0; } /* seq counter now lives in bus_seq.c */
 
 int g_bus_subscribe(g_subscriber_t sub, void *ud) {
     pthread_mutex_lock(&g_bus_lock);
@@ -253,12 +252,7 @@ int g_bus_publish(const g_event_t *ev) {
     return 0;
 }
 
-uint64_t g_bus_next_seq(void) {
-    pthread_mutex_lock(&g_bus_lock);
-    uint64_t s = ++g_seq_counter;
-    pthread_mutex_unlock(&g_bus_lock);
-    return s;
-}
+/* g_bus_next_seq() moved to bus_seq.c (own lock+counter) — see bus_seq.c */
 
 /* ---- subscribers: log + action ---- */
 static void log_subscriber(const g_event_t *ev, void *ud) {

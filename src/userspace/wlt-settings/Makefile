@@ -74,3 +74,28 @@ check: all
 # ----------------------------------------------------------------- #
 clean:
 	rm -f $(OBJS) $(LIB)
+
+# ----------------------------------------------------------------- #
+# Wayland UI app (PHASE DESKTOP-SHELL 2026-09-19): real 5x7 glyph    #
+# font (was all-zero + block renderer), wl_seat binding, settings-   #
+# engine wiring (4 panels + persisted values), headless --selftest.  #
+# ----------------------------------------------------------------- #
+WAYLAND_CFLAGS := $(shell pkg-config --cflags wayland-client 2>/dev/null)
+WAYLAND_LIBS   := $(shell pkg-config --libs wayland-client 2>/dev/null)
+XDGSHELL_H     := xdg-shell-client-protocol.h
+XDGSHELL_C     := xdg-shell-protocol.c
+APP            := wlt-settings-app
+
+$(XDGSHELL_H) $(XDGSHELL_C): /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
+	wayland-scanner client-header < $< > $(XDGSHELL_H)
+	wayland-scanner private-code < $< > $(XDGSHELL_C)
+
+app: $(APP)
+
+$(APP): wlt-settings-app.c $(LIB) $(XDGSHELL_H)
+	$(CC) $(CFLAGS) -I. -Iinclude $(WAYLAND_CFLAGS) -o $@ wlt-settings-app.c $(XDGSHELL_C) $(LIB) $(WAYLAND_LIBS)
+
+selftest: $(APP)
+	./$(APP) --selftest
+
+.PHONY: app selftest
