@@ -70,6 +70,46 @@ if [ -d "$VM_PROJECTS" ]; then
     fi
 fi
 
+# Patch 0004: libsel4vm direct external-interrupt vector injection (RC9 fix)
+# Stock vm_inject_irq drives the emulated i8259 vPIC -- structurally dead
+# for an ioapic-mode guest (EOIs go to the real VTX APIC, never the
+# emulation, so in-service vectors wedge and priority-block same-class
+# deliveries forever). Adds vm_apic_inject_external_vector(): direct
+# VM-entry injection at the guest-programmed vector (0x30+irq), a
+# pending-vector queue delivered at the next interrupt window, and a
+# post-delivery re-ack hook. Proven: pcnet IRQ 11 delivered as vector
+# 59, TX watchdog timeouts gone, cross-vm bridge ping-pong SUCCESS.
+if [ -d "$SEL4_LIBS" ]; then
+    if [ -f "$PATCH_DIR/0004-libsel4vm-rc9-direct-irq-injection.patch" ]; then
+        cd "$SEL4_LIBS"
+        if git apply --check "$PATCH_DIR/0004-libsel4vm-rc9-direct-irq-injection.patch" 2>/dev/null; then
+            git apply "$PATCH_DIR/0004-libsel4vm-rc9-direct-irq-injection.patch"
+            echo "[apply-patches] Applied: 0004-libsel4vm-rc9-direct-irq-injection"
+        else
+            echo "[apply-patches] Already applied or conflict: 0004-libsel4vm-rc9-direct-irq-injection"
+        fi
+    fi
+fi
+
+# Patch 0005: vm Init template consumes the RC9 injection API
+# Inject loop calls vm_apic_inject_external_vector(0x30+irq), caches
+# per-irq handler caps, defines vm_rc9_reack_vector() -- host IRQ
+# re-acked ONLY after actual guest delivery (self-clocking level line;
+# re-acking at inject time starves the guest with an infinite badge
+# storm). Also carries the guest_fake_devices memory-reservation hunk
+# from the eth0-binding stack (previously build-tree-only).
+if [ -d "$VM_PROJECTS" ]; then
+    if [ -f "$PATCH_DIR/0005-vm-Init-rc9-irq-injection.patch" ]; then
+        cd "$VM_PROJECTS"
+        if git apply --check "$PATCH_DIR/0005-vm-Init-rc9-irq-injection.patch" 2>/dev/null; then
+            git apply "$PATCH_DIR/0005-vm-Init-rc9-irq-injection.patch"
+            echo "[apply-patches] Applied: 0005-vm-Init-rc9-irq-injection"
+        else
+            echo "[apply-patches] Already applied or conflict: 0005-vm-Init-rc9-irq-injection"
+        fi
+    fi
+fi
+
 # ---------- Camkes app sync + drift guard (gap #26 recurrence) ----------
 # The tracked camkes app is AUTHORITATIVE. Missing build-tree copies are
 # bootstrapped from git; an existing copy that has drifted (hand-edited

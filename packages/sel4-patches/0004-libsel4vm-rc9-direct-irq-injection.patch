@@ -1,0 +1,80 @@
+diff --git a/libsel4vm/include/sel4vm/guest_irq_controller.h b/libsel4vm/include/sel4vm/guest_irq_controller.h
+index daaa5e5..1eb023e 100644
+--- a/libsel4vm/include/sel4vm/guest_irq_controller.h
++++ b/libsel4vm/include/sel4vm/guest_irq_controller.h
+@@ -28,6 +28,9 @@ typedef void (*irq_ack_fn_t)(vm_vcpu_t *vcpu, int irq, void *cookie);
+  */
+ int vm_inject_irq(vm_vcpu_t *vcpu, int irq);
+ 
++/* RC9 fix: inject an external interrupt at a raw vector into the vcpu lapic */
++void vm_apic_inject_external_vector(vm_vcpu_t *vcpu, int vector);
++
+ /***
+  * @function vm_set_irq_level(vcpu, irq, irq_level)
+  * Set level of IRQ number into a VM's interrupt controller
+diff --git a/libsel4vm/src/arch/x86/interrupt.c b/libsel4vm/src/arch/x86/interrupt.c
+index f08b72d..1f3c899 100644
+--- a/libsel4vm/src/arch/x86/interrupt.c
++++ b/libsel4vm/src/arch/x86/interrupt.c
+@@ -31,10 +31,13 @@ static void resume_guest(vm_vcpu_t *vcpu)
+     vm_guest_state_set_control_ppc(vcpu->vcpu_arch.guest_state, state);
+ }
+ 
++static int rc9_pending_vector = -1;
++extern void vm_rc9_reack_vector(int vector);
++
+ static void inject_irq(vm_vcpu_t *vcpu, int irq)
+ {
+     /* Inject a vectored exception into the guest */
+-    assert(irq >= 16);
++    assert(irq >= 0); /* relaxed: cross_vm uses ISA IRQ 12 */
+     vm_guest_state_set_control_entry(vcpu->vcpu_arch.guest_state, BIT(31) | irq);
+ }
+ 
+@@ -109,6 +112,17 @@ int vm_pending_interrupt_handler(vm_vcpu_t *vcpu)
+ {
+     /* see if there is actually a pending interrupt */
+     assert(can_inject(vcpu));
++    if (rc9_pending_vector >= 0) {
++        int v = rc9_pending_vector;
++        rc9_pending_vector = -1;
++        inject_irq(vcpu, v);
++        vm_rc9_reack_vector(v);
++        if (vm_apic_has_interrupt(vcpu) < 0 && rc9_pending_vector < 0) {
++            resume_guest(vcpu);
++        }
++        vcpu->vcpu_arch.guest_state->virt.interrupt_halt = 0;
++        return VM_EXIT_HANDLED;
++    }
+     int irq = vm_apic_get_interrupt(vcpu);
+     if (irq == -1) {
+         resume_guest(vcpu);
+@@ -173,6 +187,28 @@ void vm_check_external_interrupt(vm_t *vm)
+     }
+ }
+ 
++/* RC9 fix: direct external-interrupt injection at a raw vector.
++ * Bypasses the emulated LAPIC IRR/ISR/PPR machinery entirely -- the guest
++ * is an ioapic-mode OS: ISA IRQ n arrives as vector 0x30+n (programmed by
++ * the guest itself into the passthrough host ioapic). The emulated LAPIC's
++ * ISR never clears (the guest EOIs the real VTX APIC, not the emulation),
++ * so same-class vectors were priority-blocked forever. If we cannot inject
++ * right now, arm the interrupt window; the caller's host-IRQ re-Ack loop
++ * retries within ~ms while the device line is held. */
++void vm_apic_inject_external_vector(vm_vcpu_t *vcpu, int vector)
++{
++    if (can_inject(vcpu)) {
++        inject_irq(vcpu, vector);
++        vm_rc9_reack_vector(vector);
++    } else {
++        /* guest not injectable now (e.g. IF=0): queue and deliver at the
++         * next interrupt window; the caller's re-ack loop will re-sample
++         * the host line, so a queued vector is never lost. */
++        rc9_pending_vector = vector;
++        wait_for_guest_ready(vcpu);
++    }
++}
++
+ void vm_vcpu_accept_interrupt(vm_vcpu_t *vcpu)
+ {
+     if (vm_apic_has_interrupt(vcpu) == -1) {
