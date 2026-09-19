@@ -1,16 +1,23 @@
 /*
  * minimal_tor_pd.camkes — Two Linux Guest VMs (vm0 + vm1) with IPC
- * Based on the proven x86 multi-VM pattern from optiplex9020.camkes.
- * v3: e1000 NIC passed to vm1 via I/O PORTS only (BAR1: 0xc000-0xc040).
- *     MMIO BARs and untyped_mmios removed — seL4 has no device untyped
- *     for the PCI MMIO hole (0xfeb80000+) so we rely on the e1000 driver's
- *     I/O port access path. QEMU: -device e1000,netdev=net0.
+ * v4: pcnet NIC (AMD Am79C970A, PCI 1022:2000) passed to vm1 via I/O ports.
+ *     pcnet32 is an I/O-PORT-ONLY NIC: BAR0 is I/O ports (no MMIO needed),
+ *     which seL4 can grant directly via ioport caps — no device untyped /
+ *     EPT MMIO mapping required (the limitation that defeated the e1000,
+ *     whose BAR0 was MMIO at 0xfeb80000). The guest kernel has
+ *     CONFIG_PCNET32=y (built-in). QEMU: -device pcnet,netdev=net0.
+ *     QEMU assigns: Bus 0, Dev 3, Fun 0, IRQ 11 pin A, BAR0 I/O 0xc000-0xc01f.
+ *     PCI config-space passthrough is done entirely in C
+ *     (cross_vm_connections_vm1.c) via vmm_pci_create_passthrough — NO
+ *     camkes pci_devices block (which would require MMIO untypeds).
  */
 import <VM/vm.camkes>;
 
 #include <configurations/vm.h>
 
-#define VM_GUEST_CMDLINE "earlyprintk=ttyS0,115200 console=ttyS0,115200 rdinit=/init i8042.nokbd=iy \
+#define VM_GUEST_CMDLINE "earlyprintk=ttyS0,115200 console=ttyS0,115200 loglevel=7 rdinit=/init i8042.nokbd=iy \
+i8042.nomux=y i8042.noaux=y io_delay=udelay noisapnp pci=nomsi realloc=off"
+#define VM_GUEST_CMDLINE_QUIET "earlyprintk=ttyS0,115200 console=ttyS0,115200 loglevel=0 rdinit=/init i8042.nokbd=iy \
 i8042.nomux=y i8042.noaux=y io_delay=udelay noisapnp pci=nomsi realloc=off"
 
 component Init0 {
@@ -54,7 +61,7 @@ assembly {
         vm0.simple_untyped22_pool = 1;
         vm0.heap_size = 0x10000;
         vm0.guest_ram_mb = 128;
-        vm0.kernel_cmdline = VM_GUEST_CMDLINE;
+        vm0.kernel_cmdline = VM_GUEST_CMDLINE_QUIET;
         vm0.kernel_image = "bzimage";
         vm0.kernel_relocs = "bzimage";
         vm0.initrd_image = "rootfs.cpio";
@@ -81,38 +88,30 @@ assembly {
         vm1.iospace_domain = 0x10;
         vm1.pci_devices_iospace = 2;
 
-        /* e1000 NIC passthrough to vm1 for Tor network access.
-         * QEMU: -device e1000,netdev=net0 -netdev user,id=net0
-         * QEMU assigns: Bus 0, Dev 3, Fun 0, IRQ 11
-         * e1000 BAR layout: BAR0 MMIO 128KB, BAR1 I/O 0xc000-0xc03f (0x40),
-         * BAR2 Flash MMIO, BAR3 unsupported.
-         * I/O-port-only mode: DUMMY memory entry at 0xa0004000 (4KB).
-         * 0xa0004000 sits in the cross_vm dataport MMIO range (tor_src_dp
-         * @ 0xa0001000, tor_dest_dp @ 0xa0003000) that seL4 already has
-         * untypeds for. The capdl template (seL4VMPCIDevices.template.c)
-         * iterates device['memory'] and allocates frame caps; an empty array
-         * emits a broken cap reference that prevents PCI config-space
-         * passthrough. The dummy satisfies the template so the VMM registers
-         * the e1000 BDF (0:3:0) for 0xCF8/0xCFC passthrough. The guest then
-         * discovers the e1000 via PCI config space and uses I/O ports
-         * (0xc000-0xc040) for register access — the dummy frame is never
-         * touched by the driver.
-         */
-        vm1.pci_devices = [
-            {
-                "name":"Ethernet0",
-                "bus":0, "dev":3, "fun":0,
-                "irq":"Ethernet0",
-                "memory":[
-                    {"paddr":0xa0004000, "size":0x1000, "page_bits":12}
-                ],
-            },
-        ];
+        /* pcnet NIC I/O-port + IRQ passthrough to vm1 (C-only PCI config
+         * passthrough; no camkes pci_devices block needed).
+         * QEMU pcnet: BDF 0:3:0, IRQ 11 pin A, BAR0 I/O 0xc000-0xc01f (0x20).
+         * The ioport range is granted as a NON-PCI ioport (no pci_device
+         * field) so the VMM registers it via vm_enable_passthrough_ioport
+         * (main.c nonpci ioport loop). The pcnet32 driver probes BAR0, sees
+         * bit0=1 (I/O port space), and accesses 0xc000-0xc01f directly.
+         * IRQ 11 is injected via vm_irqs (registered independently in
+         * init_irqs). end=0xc020 covers 0xc000-0xc01f under both
+         * inclusive/exclusive ioport-cap interpretations.
+         *
+         * NOTE: PCI config ports 0xCF8-0xCFF are NOT added here — they are
+         * already owned by the seL4 VM framework's `pci_config` CAmkES
+         * component (pci_config.config_address_ports_ioport=[0xCF8..0xCFB]
+         * and pci_config.config_data_ports_ioport=[0xCFC..0xCFF]). Adding
+         * them to vm1.vm_ioports causes a capdl "ports already in use"
+         * conflict at boot. The VMM's vm_io_port_add_handler for 0xCF8-0xCFF
+         * in main.c is the correct interception mechanism and does NOT need
+         * guest ioport caps. */
         vm1.vm_ioports = [
-            {"start":0xc000, "end":0xc040, "pci_device":3, "name":"Ethernet0"},
+            {"start":0xc000, "end":0xc020, "name":"pcnet0"},
         ];
         vm1.vm_irqs = [
-            {"name":"Ethernet0", "ioapic":0, "source":11, "level_trig":1, "active_low":1, "dest":11},
+            {"name":"pcnet0", "ioapic":0, "source":11, "level_trig":1, "active_low":0, "dest":11},
         ];
     }
 }

@@ -117,6 +117,15 @@ done
 
 print_ok "File length check complete"
 
+# --- Check: camkes app drift (gap #26 guard) ---------------------------
+echo ""
+echo "Checking camkes app sync (build tree vs git)..."
+if bash "$SCRIPT_DIR/check-camkes-sync.sh"; then
+    print_ok "Camkes app in sync with build tree"
+else
+    print_err "Camkes app DRIFT -- what boots is not what git tracks; reconcile before committing"
+fi
+
 # ─── Summary ───────────────────────────────────────────
 echo ""
 echo "=== Summary ==="

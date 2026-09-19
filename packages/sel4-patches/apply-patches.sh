@@ -10,7 +10,7 @@
 #   <vm_projects_path> = path to vm projects checkout (camkes-vm-linux)
 
 set -e
-PATCH_DIR="$(dirname "$0")"
+PATCH_DIR="$(cd "$(dirname "$0")" && pwd)"  # absolute: later blocks cd around
 
 SEL4_LIBS="${1:-/home/kushal/wltios-build/projects/seL4_projects_libs}"
 VM_PROJECTS="${2:-/home/kushal/wltios-build/projects/vm}"
@@ -34,6 +34,28 @@ else
     echo "[apply-patches] WARNING: seL4_projects_libs not found at $SEL4_LIBS"
 fi
 
+# Patch 0002: PCI host-bridge DSDT with _PRT (00:01.0 INTA -> GSI 11)
+# REGENERATED 2026-09-19 from the proven build tree. The previously
+# committed version embedded a 36-byte DSDT table header inside the AML
+# array -- acpi_fill_table_head() then wrapped a SECOND header around it,
+# the guest kernel parsed the ASCII "DSDT" magic as AML opcodes, and PCI0
+# never materialised (no root bridge, no bus scan, pcnet32 never bound).
+# This version embeds the bare 138-byte AML body plus the _PRT routing
+# table so the pcnet's INT A resolves to GSI 11.
+# NOTE: this block was previously MISSING from apply-patches.sh entirely
+# (the script jumped 0001 -> 0003): fresh checkouts applied no DSDT at all.
+if [ -d "$SEL4_LIBS" ]; then
+    if [ -f "$PATCH_DIR/0002-libsel4vmmplatsupport-add-PCI-host-bridge-DSDT.patch" ]; then
+        cd "$SEL4_LIBS"
+        if git apply --check "$PATCH_DIR/0002-libsel4vmmplatsupport-add-PCI-host-bridge-DSDT.patch" 2>/dev/null; then
+            git apply "$PATCH_DIR/0002-libsel4vmmplatsupport-add-PCI-host-bridge-DSDT.patch"
+            echo "[apply-patches] Applied: 0002-libsel4vmmplatsupport-add-PCI-host-bridge-DSDT"
+        else
+            echo "[apply-patches] Already applied or conflict: 0002-libsel4vmmplatsupport-add-PCI-host-bridge-DSDT"
+        fi
+    fi
+fi
+
 # Patch 0003: Init main.c indentation fix (cosmetic, from debugging session)
 # This is a whitespace-only fix and can be skipped without functional impact.
 if [ -d "$VM_PROJECTS" ]; then
@@ -46,6 +68,30 @@ if [ -d "$VM_PROJECTS" ]; then
             echo "[apply-patches] Already applied or conflict: 0003-Init-main-c-indentation-fix"
         fi
     fi
+fi
+
+# ---------- Camkes app sync + drift guard (gap #26 recurrence) ----------
+# The tracked camkes app is AUTHORITATIVE. Missing build-tree copies are
+# bootstrapped from git; an existing copy that has drifted (hand-edited
+# build tree without a matching commit) FAILS the build setup.
+VM_EXAMPLES="${3:-$(dirname "$VM_PROJECTS")/vm-examples}"
+APP_SRC="$PATCH_DIR/../../src/sel4-partitions/tor-pd/camkes/app"
+LIVE_APP="$VM_EXAMPLES/apps/x86/tor_pd_vm1"
+
+if [ -d "$LIVE_APP" ]; then
+    for f in minimal_tor_pd.camkes src/cross_vm_connections_vm1.c src/cross_vm_connections.c app_settings.cmake CMakeLists.txt; do
+        if [ -f "$APP_SRC/$f" ] && [ ! -f "$LIVE_APP/$f" ]; then
+            cp "$APP_SRC/$f" "$LIVE_APP/$f"
+            echo "[apply-patches] Bootstrapped from git: $f"
+        fi
+    done
+    export WLTIOS_BUILD_TREE="$(cd "$(dirname "$VM_EXAMPLES")" && pwd)/.."
+    if ! bash "$PATCH_DIR/../../scripts/check-camkes-sync.sh"; then
+        echo "[apply-patches] FATAL: camkes app drift -- reconcile before building" >&2
+        exit 1
+    fi
+else
+    echo "[apply-patches] WARNING: tor_pd_vm1 app dir not found at $LIVE_APP (fresh tree?)"
 fi
 
 echo "[apply-patches] Done."
