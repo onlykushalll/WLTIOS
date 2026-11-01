@@ -21,6 +21,26 @@
 #include <errno.h>
 #include <time.h>
 
+/* ─── wlt_fm_safe (Rust FFI) — parallel-live integration ─────────────
+ * [rust-integration 2026-09-13] Memory-safe symlink-correct copy/delete
+ * from wlt_fm_safe/ (9/9 tests pass in this toolchain). Linked in
+ * PARALLEL with the C implementation above (runtime-verified, gap #37
+ * fix): the C path remains the default; the FFI below is reachable for
+ * migration testing. The replace-vs-parallel decision is FLAGGED to the
+ * orchestrator, not made silently here. See wlt_fm_safe/README.md. */
+extern int wlt_fm_safe_copy_directory(const char *src, const char *dst);
+extern int wlt_fm_safe_delete_directory(const char *path);
+
+int wlt_fm_safe_backend_available(void)
+{
+    /* NULL/NULL is rejected by the FFI's null-guard (test 5) - a safe
+     * probe that also forces the linker to keep the Rust archive. If the
+     * archive were absent this symbol would not link at all, so reaching
+     * here at runtime means the backend IS available. */
+    (void)wlt_fm_safe_copy_directory(NULL, NULL);
+    return 1;
+}
+
 #define COPY_BUFFER_SIZE (64 * 1024)  /* 64KB chunks */
 
 /* ─── Path existence checks ──────────────────────────── */

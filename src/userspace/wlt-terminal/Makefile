@@ -5,7 +5,7 @@
 # ADR:  docs/adr/05-wayland-wlroots.md
 
 CC = gcc
-CFLAGS = -Wall -Wextra -std=gnu11 -O2 -D_GNU_SOURCE \
+CFLAGS = -Wall -Wextra -std=gnu11 -O2 -D_GNU_SOURCE -Iinclude \
          -Wno-unused-parameter -Wno-unused-function -Wno-misleading-indentation
 WAYLAND_CFLAGS = $(shell pkg-config --cflags wayland-client 2>/dev/null)
 WAYLAND_LIBS = $(shell pkg-config --libs wayland-client 2>/dev/null) -lutil
@@ -26,9 +26,9 @@ all: $(LIB) $(TERM)
 $(LIB): $(LIB_OBJS)
 	ar rcs $@ $(LIB_OBJS)
 
-$(TERM): wlt-term-wayland.c xdg-shell-client-protocol.c xdg-shell-client-protocol.h
+$(TERM): wlt-term-wayland.c xdg-shell-client-protocol.c xdg-shell-client-protocol.h pty.o
 	$(CC) $(CFLAGS) $(WAYLAND_CFLAGS) -I . \
-		wlt-term-wayland.c xdg-shell-client-protocol.c \
+		wlt-term-wayland.c xdg-shell-client-protocol.c pty.o \
 		$(WAYLAND_LIBS) -o $@
 
 %.o: %.c

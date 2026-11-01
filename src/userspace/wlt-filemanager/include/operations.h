@@ -47,6 +47,13 @@ wlt_filemanager_error_t wlt_fm_delete_file(const char *path);
  */
 wlt_filemanager_error_t wlt_fm_delete_directory(const char *path);
 
+/* [rust-integration 2026-09-13] wlt_fm_safe (Rust FFI) availability probe.
+ * The Rust implementation is linked IN PARALLEL with the verified C fix
+ * (see wlt_fm_safe/README.md) - migration decision flagged to the
+ * orchestrator, NOT silently switched. Returns 1 when the Rust backend
+ * is linked and callable, 0 when absent. */
+int wlt_fm_safe_backend_available(void);
+
 /**
  * Create a directory
  */

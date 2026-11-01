@@ -22,17 +22,23 @@ OBJS = $(SRCS:.c=.o)
 
 TARGET = libwlt-filemanager.a
 BIN = wlt-filemanager
+RUST_DIR = wlt_fm_safe
+RUST_LIB = $(RUST_DIR)/target/release/libwlt_fm_safe.a
 
-.PHONY: all clean
+.PHONY: all clean rust
 
 all: $(TARGET) $(BIN)
+
+rust:
+	(cd $(RUST_DIR) && cargo build --release)
 
 $(TARGET): $(OBJS)
 	ar rcs $@ $(OBJS)
 
-$(BIN): $(OBJS) xdg-shell-client-protocol.c xdg-shell-client-protocol.h
+$(BIN): $(OBJS) xdg-shell-client-protocol.c xdg-shell-client-protocol.h rust
 	$(CC) $(CFLAGS) $(WAYLAND_CFLAGS) -I . $(OBJS) \
-		xdg-shell-client-protocol.c $(WAYLAND_LIBS) -o $@
+		xdg-shell-client-protocol.c $(WAYLAND_LIBS) $(RUST_LIB) -o $@ \
+		-lpthread -ldl -lm
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@

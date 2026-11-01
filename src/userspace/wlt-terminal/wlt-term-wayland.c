@@ -9,7 +9,7 @@
  *
  * Reuses from wlt-term-main.c:
  *   - Linux kernel font_8x16 (96 chars, 8x16, 2x scale = 16x32 per glyph)
- *   - PTY spawn (forkpty + /bin/sh)
+ *   - PTY spawn (wlt_pty_* library API + /bin/sh)
  *   - Grid buffer + cursor
  *   - ANSI CSI parser
  *
@@ -24,7 +24,9 @@
  * Run:   WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run wlt-terminal
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +39,7 @@
 #include <termios.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
-#include <pty.h>
+#include "include/pty.h"
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
 
@@ -421,18 +423,16 @@ int main(void) {
             grid[i][j] = banner[i][j];
     cur_row = 8; cur_col = 2;
 
-    /* Fork PTY */
-    int master_fd;
-    pid_t pid = forkpty(&master_fd, NULL, NULL, NULL);
-    if (pid < 0) {
-        fprintf(stderr, "[wlt-term] forkpty failed: %s\n", strerror(errno));
+    /* Spawn PTY via the spec'd wlt-terminal pty.c library (wlt_pty_* API).
+     * The library owns openpty/fork/exec, initial window size and reaping;
+     * the terminal keeps only the master handle for poll/read/write. */
+    wlt_Pty *pty = NULL;
+    wlt_pty_error_t prc = wlt_pty_create(&pty, NULL, (uint32_t)COLS, (uint32_t)ROWS);
+    if (prc != WLT_PTY_OK) {
+        fprintf(stderr, "[wlt-term] wlt_pty_create failed: %s\n", wlt_pty_error_str(prc));
         return 1;
     }
-    if (pid == 0) {
-        execl("/bin/sh", "sh", NULL);
-        _exit(127);
-    }
-    fprintf(stderr, "[wlt-term] PTY spawned (pid=%d)\n", pid);
+    fprintf(stderr, "[wlt-term] PTY spawned (pid=%d)\n", (int)wlt_pty_pid(pty));
 
     /* Launch file manager + status bar + kairos as additional Wayland clients */
     pid_t fm_pid = fork();
@@ -452,7 +452,7 @@ int main(void) {
     fprintf(stderr, "[wlt-term] settings app launched (pid=%d)\n", settings_pid);
 
     /* Main loop: poll PTY + dispatch Wayland */
-    struct pollfd pfd = { .fd = master_fd, .events = POLLIN };
+    struct pollfd pfd = { .fd = wlt_pty_fd(pty), .events = POLLIN };
     while (running) {
         /* Process Wayland events */
         while (wl_display_prepare_read(display) != 0)
@@ -465,11 +465,12 @@ int main(void) {
         int pr = poll(&pfd, 1, 33);
         if (pr > 0 && (pfd.revents & POLLIN)) {
             char buf[4096];
-            ssize_t n = read(master_fd, buf, sizeof(buf));
-            if (n > 0) {
-                for (ssize_t i = 0; i < n; i++) process_byte(buf[i]);
+            size_t n = 0;
+            wlt_pty_error_t rrc = wlt_pty_read(pty, (uint8_t *)buf, sizeof(buf), &n);
+            if (rrc == WLT_PTY_OK && n > 0) {
+                for (size_t i = 0; i < n; i++) process_byte(buf[i]);
                 needs_redraw = 1;
-            } else if (n == 0) break;
+            } else if (rrc == WLT_PTY_ERR_CLOSED) break;
         }
 
         /* Render + commit only after configured */
@@ -483,5 +484,6 @@ int main(void) {
     }
 
     fprintf(stderr, "[wlt-term] exiting\n");
+    wlt_pty_destroy(pty);
     return 0;
 }

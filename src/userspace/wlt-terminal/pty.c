@@ -19,11 +19,14 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
-#ifdef __linux__
-#include <pty.h>
-#else
-#include <util.h>
-#endif
+#include <termios.h>
+
+/* openpty() is provided by libutil (-lutil). glibc/musl declare it in
+ * <pty.h> / <util.h>, but this module's own include/pty.h shadows the
+ * system header of the same name once -Iinclude is in effect. Declare the
+ * prototype directly instead (stable libutil ABI, both libcs). */
+int openpty(int *amaster, int *aslave, char *name,
+            const struct termios *termp, const struct winsize *winp);
 
 /* ─── Helpers ────────────────────────────────────────── */
 

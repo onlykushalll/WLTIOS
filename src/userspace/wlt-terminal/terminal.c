@@ -20,7 +20,9 @@
  *   - Command output displayed in the terminal
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -117,8 +119,9 @@ static const uint8_t font[][7] = {
 /* Draw a character at grid position (col, row) */
 static void draw_char(int col, int row, char c, uint32_t *pixels)
 {
-    if (c < 32 || c > 127) c = '?';
-    const uint8_t *glyph = font[(int)c];
+    unsigned char uc = (unsigned char)c;
+    if (uc < 32 || uc > 127) uc = '?';
+    const uint8_t *glyph = font[(int)uc];
     if (!glyph) glyph = font[(int)'?'];
 
     int px = col * CHAR_W;
