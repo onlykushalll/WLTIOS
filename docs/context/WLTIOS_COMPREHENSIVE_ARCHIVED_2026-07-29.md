@@ -14,7 +14,7 @@ Tails-level anonymity (Tor-only, amnesia, MAC randomization) but with
 seL4's formally-verified partition isolation so that compromising Linux
 doesn't compromise Tor or the encryption keys.
 
-**Target hardware:** Dell Latitude 3420 (KUSHALPC), i5-1135G7, 8GB RAM,
+**Target hardware:** Dell Latitude 3420 (LOCALDEV), i5-1135G7, 8GB RAM,
 Windows 10. Development via WSL2 Ubuntu.
 
 **Core components:**
@@ -32,10 +32,10 @@ Windows 10. Development via WSL2 Ubuntu.
 
 | Person/Agent | Role | Environment |
 |---|---|---|
-| **Kushal** | Developer, user, decision-maker | Windows PC (KUSHALPC) + WSL2 Ubuntu |
+| **Kushal** | Developer, user, decision-maker | Windows PC (LOCALDEV) + WSL2 Ubuntu |
 | **Claude** | AI agent with WSL2 access via Desktop Commander | Can run `wsl bash`, edit files on PC, build, boot QEMU |
 | **GLM / Z.ai (me)** | AI agent in cloud sandbox | `/home/z/my-project/` sandbox; MCPilot bridge to PC when live |
-| **MCPilot** | Local MCP server on Kushal's PC | 77 tools, Cloudflare tunnel at `kushalneedsmcp.online` |
+| **MCPilot** | Local MCP server on Kushal's PC | 77 tools, Cloudflare tunnel at `localhost` |
 
 ---
 
@@ -59,9 +59,9 @@ compositor DRM + seL4 multi-PD task. The fix is routing, not spec quality.
 
 ### Live state
 - **Version:** 3.1.0
-- **URL:** `https://kushalneedsmcp.online` (Cloudflare Tunnel — NOT zrok)
+- **URL:** `http://localhost:7878` (Cloudflare Tunnel — NOT zrok)
 - **Port:** 7878
-- **Auth token:** `mcpilot-secret-2024` (env var `MCPILOT_TOKEN`)
+- **Auth token:** `<token>` (env var `MCPILOT_TOKEN`)
 - **Tool count:** **77** (verified two ways: `toolDefs.length` + live `/health`)
 - **Tunnel:** `cloudflared.exe tunnel run mcp-tunnel`
 - **Live check:** `ping → pong 2026-07-11T10:17:27.057Z`

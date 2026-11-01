@@ -58,7 +58,7 @@ seL4 microkernel (verified, isolated partitions)
 ```
 AI agent (cloud sandbox or local)
   └── node mcp-call.js <tool> '<json>' (Node fetch, browser User-Agent)
-       └── Cloudflare Tunnel (kushalneedsmcp.online)
+       └── Cloudflare Tunnel (localhost)
             └── MCPilot v3.2.0 on Kushal's PC (port 7878)
                  └── 72 tools (file, process, registry, UIA, keyboard, mouse, etc.)
 ```
@@ -84,8 +84,8 @@ curl.exe http://127.0.0.1:7878/health
 ```
 
 ### Auth
-- Token: `mcpilot-secret-2024` (env var `MCPILOT_TOKEN`)
-- URL: `https://kushalneedsmcp.online` (Cloudflare Tunnel, permanent)
+- Token: `<token>` (env var `MCPILOT_TOKEN`)
+- URL: `http://localhost:7878` (Cloudflare Tunnel, permanent)
 - Port: 7878
 
 ### How to Verify It's Up

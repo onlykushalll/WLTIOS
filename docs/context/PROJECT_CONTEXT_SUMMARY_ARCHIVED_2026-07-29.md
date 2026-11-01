@@ -14,7 +14,7 @@
 - **Anonymity layer:** Tor routed through every network call, with a route-based kill switch that halts all traffic if Tor drops.
 - **Security layer:** "Guardian" (a.k.a. `wlt-defender`) — PID 3 daemon combining YARA malware scanning, BPF hooks, FIM (file integrity monitor), anomaly ML, canary files, and an enforcement engine (kill switch, process freeze, lockdown).
 - **AI layer:** "Kairos" — on-device assistant built around a local LLM (currently Qwen2.5-1.5B as a stand-in for the intended Qwythos-9B / VibeThinker-3B). Kairos uses a tool-call protocol with a security denylist (e.g. `rm -rf /` blocked).
-- **Target hardware:** Dell Latitude 3420 named KUSHALPC (Intel i5-1135G7, 8 GB RAM, Windows 10).
+- **Target hardware:** Dell Latitude 3420 named LOCALDEV (Intel i5-1135G7, 8 GB RAM, Windows 10).
 - **Target metrics:** <256 MB idle RAM, <3 s boot, fully amnesic (tmpfs root, RAM wipe on shutdown), MAC spoofing, no telemetry.
 
 ### Architecture stack (top-to-bottom)
@@ -38,11 +38,11 @@
 
 | Role | Identity | Where they work |
 |---|---|---|
-| **Kushal** (developer/user) | Human, owns KUSHALPC | Drives all sessions, decides scope, runs MCPilot on PC |
-| **Claude** (AI #1) | Anthropic Claude with **Desktop Commander MCP** + **Filesystem MCP** on KUSHALPC | Works directly against `~/wltios-build/` inside WSL2 Ubuntu on the Dell — real seL4/CAmkES/QEMU/guardian/compositor. Issues the big multi-hour task prompts. |
+| **Kushal** (developer/user) | Human, owns LOCALDEV | Drives all sessions, decides scope, runs MCPilot on PC |
+| **Claude** (AI #1) | Anthropic Claude with **Desktop Commander MCP** + **Filesystem MCP** on LOCALDEV | Works directly against `~/wltios-build/` inside WSL2 Ubuntu on the Dell — real seL4/CAmkES/QEMU/guardian/compositor. Issues the big multi-hour task prompts. |
 | **GLM / Z.ai** (AI #2) | This cloud sandbox (`/home/z/my-project/`) — a Next.js dev environment with bash/Read/Write/Grep/etc. tools, but **no** QEMU, **no** seL4, **no** MCPilot bridge unless Claude's session is alive | Builds skeleton code, writes specs/ADRs/tests, audits, mirrors code to `/home/z/my-project/wltios/`. Cannot reach the real WSL2 tree. |
-| **MCPilot** | Kushal's homegrown MCP server (`mcpilot.cjs`, 53 tools, pure Node) running on KUSHALPC port 7878, exposed via Cloudflare Tunnel at `https://kushalneedsmcp.online` | The bridge GLM uses to read/write Windows files; `node /home/z/my-project/mcp-call.js <tool> '<json>'` is the only sanctioned call path |
-| **Hardware** | Dell Latitude 3420, KUSHALPC, i5-1135G7, 8 GB RAM, Windows 10 | All builds target this. Real hardware boot never achieved — ISO sits on desktop awaiting user test. |
+| **MCPilot** | Kushal's homegrown MCP server (`mcpilot.cjs`, 53 tools, pure Node) running on LOCALDEV port 7878, exposed via Cloudflare Tunnel at `http://localhost:7878` | The bridge GLM uses to read/write Windows files; `node /home/z/my-project/mcp-call.js <tool> '<json>'` is the only sanctioned call path |
+| **Hardware** | Dell Latitude 3420, LOCALDEV, i5-1135G7, 8 GB RAM, Windows 10 | All builds target this. Real hardware boot never achieved — ISO sits on desktop awaiting user test. |
 
 ---
 
@@ -50,8 +50,8 @@
 
 ### Phase 0 — MCPilot + tooling bootstrap (chunks 1–4)
 - Initial chat: GLM explains its built-in tools vs Desktop Commander.
-- Bash tools broke (403 cascade). User set up Cloudflare Tunnel (`cloudflared.exe`) → first tunnel URL `assure-associates-contributor-medicaid.trycloudflare.com`, later permanent `https://kushalneedsmcp.online`.
-- Built MCPilot v2 (53 tools, Bearer auth `mcpilot-secret-2024`), 314 KB/s throughput vs DC's 3,600 c/s @ 50% fail.
+- Bash tools broke (403 cascade). User set up Cloudflare Tunnel (`cloudflared.exe`) → first tunnel URL `assure-associates-contributor-medicaid.trycloudflare.com`, later permanent `http://localhost:7878`.
+- Built MCPilot v2 (53 tools, Bearer auth `<token>`), 314 KB/s throughput vs DC's 3,600 c/s @ 50% fail.
 - Read all 200 `C:\tmp` files (1.34 MB in 4.4 s).
 - **Honest flag:** the "VBS bug fixed" report was a hardcoded template string; the real VBS files (`start-mcpilot-v2.vbs`, `start-mcpilot.vbs`) in `_archive\` were never touched.
 
@@ -277,7 +277,7 @@ The bottleneck isn't the spec. It's the routing. GLM cannot reach the real WSL2 
 
 ## 9. Critical Rules Learned
 
-1. **NEVER use bash+curl to MCPilot.** It triggers Cloudflare/ngrok's "browser warning" page → 403 Forbidden → corrupts MCPilot's state → ALL subsequent tool calls fail with 403 cascade → bridge lost. Always go through the Next.js `/api/wsl` route (adds `ngrok-skip-browser-warning: true` + `Authorization: Bearer mcpilot-secret-2024` headers), or use the agent-browser skill, or use `node /home/z/my-project/mcp-call.js <tool> '<json>'`.
+1. **NEVER use bash+curl to MCPilot.** It triggers Cloudflare/ngrok's "browser warning" page → 403 Forbidden → corrupts MCPilot's state → ALL subsequent tool calls fail with 403 cascade → bridge lost. Always go through the Next.js `/api/wsl` route (adds `ngrok-skip-browser-warning: true` + `Authorization: Bearer <token>` headers), or use the agent-browser skill, or use `node /home/z/my-project/mcp-call.js <tool> '<json>'`.
 2. **No "compile = done."** Must QEMU-verify. The fail-open Ed25519 stub "compiled clean" for weeks while silently bypassing all signature checks.
 3. **Read-before-write.** The Edit tool requires reading first; the discipline extends to all reasoning — never guess at line ranges or file contents.
 4. **Commit messages must match diffs.** Commit `1c6b3a5` says "KeyVaultPD component created" but its actual content is unrelated security fixes. Don't trust commit messages; trust what's actually on disk.
@@ -338,11 +338,11 @@ This task **requires** real MCPilot/WSL2 access. If this session is sandbox-only
 |---|---|---|
 | `/home/z/my-project/wltios/` (GLM sandbox mirror) | Mirror of WLTIOS source — has `src/boot/wlt-boot/` (with monocypher), `src/sel4-partitions/key-vault-pd/`, `src/userspace/wlt-*`, `docs/adr/01-08`, `docs/specs/wlt-*.md`, `docs/context/*.md`, `tests/`. **No real build tools** — no QEMU, no seL4, no CAmkES, no Microkit SDK, no guardian.c with real BPF. | GLM/Z.ai only |
 | `/home/z/my-project/mcp-call.js` | MCPilot call helper — only sanctioned way to call MCPilot. Usage: `node /home/z/my-project/mcp-call.js <tool> '<json>'` | GLM/Z.ai only |
-| `~/wltios-build/` (WSL2 Ubuntu on KUSHALPC) | **The real project.** seL4/CAmkES source, QEMU, real `guardian.c`, real `compositor.c`, `projects/vm-examples/apps/x86/keyvault_pd/`, `build-keyvault/` with `images/kernel-ia32-pc99` + `images/capdl-loader-image-ia32-pc99`. | Claude (via Desktop Commander) only |
+| `~/wltios-build/` (WSL2 Ubuntu on LOCALDEV) | **The real project.** seL4/CAmkES source, QEMU, real `guardian.c`, real `compositor.c`, `projects/vm-examples/apps/x86/keyvault_pd/`, `build-keyvault/` with `images/kernel-ia32-pc99` + `images/capdl-loader-image-ia32-pc99`. | Claude (via Desktop Commander) only |
 | `C:\Users\Default.L-HCG-9FVVGS3\OneDrive\Documents\Utils~\` (Windows) | MCPilot install: `MCPilot/mcpilot.cjs` (53 tools, pure Node), `StartMCPilot.vbs` (★ launcher, double-click), `kill-mcpilot.vbs` (★ stop), `logs/mcpilot.log` + `logs/cloudflared.log`. Also: `start-mcpilot-v2.vbs`, `start-mcpilot.vbs` in `_archive\`. | Kushal (manual) |
 | `C:\Users\Default.L-HCG-9FVVGS3\OneDrive\Desktop\` | `wholecontext.txt` (this file's source), `wltios-0.1.0-secure.iso` (35 MB, signed Microsoft shim, all fixes — STALE as of Jul 2; doesn't include killswitch-off fix `b5988fe` or self-freeze fix `df0c844`), old ISOs (3 old versions). | Kushal (manual) |
 | `github.com/onlykushalll/WLTIOS` | GitHub repo. Pushed via Windows git with credential.helper=manager (Windows Credential Manager). 85+ commits on main. | Public |
-| `https://kushalneedsmcp.online` | Permanent Cloudflare Tunnel URL → MCPilot port 7878 on KUSHALPC. Auth: `Bearer mcpilot-secret-2024`. | Public |
+| `http://localhost:7878` | Permanent Cloudflare Tunnel URL → MCPilot port 7878 on LOCALDEV. Auth: `Bearer <token>`. | Public |
 
 ---
 
@@ -401,9 +401,9 @@ This task **requires** real MCPilot/WSL2 access. If this session is sandbox-only
 
 ## 14. Tooling / Infrastructure Notes
 
-- **MCPilot** (Kushal's homegrown MCP server): 53 tools, pure Node.js, Bearer auth `mcpilot-secret-2024`, runs on KUSHALPC port 7878, exposed via Cloudflare Tunnel at `https://kushalneedsmcp.online`. 314 KB/s throughput, 100% reliability, 87x faster than Desktop Commander with 0% failure (vs DC's 50%).
+- **MCPilot** (Kushal's homegrown MCP server): 53 tools, pure Node.js, Bearer auth `<token>`, runs on LOCALDEV port 7878, exposed via Cloudflare Tunnel at `http://localhost:7878`. 314 KB/s throughput, 100% reliability, 87x faster than Desktop Commander with 0% failure (vs DC's 50%).
 - **Next.js bridge** (sandbox): `/api/wsl` route adds auth headers + `ngrok-skip-browser-warning: true` before calling MCPilot — avoids 403 cascade. `/api/file`, `/api/put` routes for file ops. `/bridge` page for manual MCPilot interaction via browser.
-- **WSL2 Ubuntu 26.04 LTS** on KUSHALPC: where real seL4/CAmkES/QEMU builds happen. Has build tools (cmake, ninja, gcc, python, libsodium-dev). Cannot run 64-bit seL4 due to missing `vmx-apicv-xapic` in nested KVM.
+- **WSL2 Ubuntu 26.04 LTS** on LOCALDEV: where real seL4/CAmkES/QEMU builds happen. Has build tools (cmake, ninja, gcc, python, libsodium-dev). Cannot run 64-bit seL4 due to missing `vmx-apicv-xapic` in nested KVM.
 - **QEMU 10.2.1** in WSL2: works for 32-bit seL4 boot. 64-bit works for bare metal only.
 - **Agent-browser skill**: headless browser automation, used as fallback when bash+curl triggers 403 cascade. Slower but works.
 - **Cloudflare Tunnel** vs ngrok: Cloudflare chosen because ngrok free tier has random disconnections, rate limits, URL changes. Cloudflare Tunnel is 100% free, no rate limits, permanent URL, auto-reconnects.
